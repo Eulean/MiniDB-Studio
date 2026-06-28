@@ -79,14 +79,14 @@ func (a *Application) ListRecordsByJSONQuery(collection, prefix, queryText strin
 		pageSize = 100
 	}
 
-	conditions, err := engine.ParseJSONQueryConditions(queryText)
+	expression, err := engine.ParseJSONQueryExpression(queryText)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	offset := page * pageSize
-	total := a.db.CountRecordsByJSONConditionsInCollection(collection, prefix, conditions)
-	return a.db.RecordsByJSONConditionsInCollection(collection, prefix, conditions, offset, pageSize), total, nil
+	total := a.db.CountRecordsByJSONExpressionInCollection(collection, prefix, expression)
+	return a.db.RecordsByJSONExpressionInCollection(collection, prefix, expression, offset, pageSize), total, nil
 }
 
 // GetRecord returns one record value for details or editing.

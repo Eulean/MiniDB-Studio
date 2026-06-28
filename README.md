@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v3.6:
+This repository now targets MiniDB v3.7:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -23,6 +23,7 @@ This repository now targets MiniDB v3.6:
 - multi-condition JSON document queries
 - string contains and numeric comparison operators
 - array membership queries for scalar arrays
+- boolean OR query composition
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database.
@@ -245,6 +246,7 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `SETJSON collection key json-value`
 - `FINDIN collection path=value [path=value ...]`
 - `FINDIN collection path>=value [path~=value ...]`
+- `FINDIN collection cond cond OR cond cond`
 - `STATS`
 - `COMPACT`
 - `SNAPSHOT`
@@ -271,7 +273,7 @@ END
 - browse by collection
 - filter by key prefix
 - browse paged keys with value preview, size, kind, and updated time
-- filter JSON collections with nested-path, multi-condition, and operator-based query expressions
+- filter JSON collections with nested-path, multi-condition, OR-composed, and operator-based query expressions
 - view full value details
 - view per-record metadata
 - create/edit records with collection and raw/json kind
@@ -393,7 +395,7 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - old `MDB1` local data is migrated into the current storage format
 - stale `minidb.lock` files are cleaned up when the owning PID is no longer alive
 
-## Implemented V3.6 Features
+## Implemented V3.7 Features
 
 - single-process lock file protection
 - snapshot create/load path
@@ -422,6 +424,8 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - string contains queries through `~=`
 - numeric comparisons through `>`, `>=`, `<`, and `<=`
 - scalar array membership queries through the existing equality syntax
+- boolean OR composition across condition groups
+- Explorer JSON query expressions share the same OR parser as the console
 
 ## Current Limitations
 
@@ -437,16 +441,17 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - no secondary indexes
 - no query planner or schema system
 - no regex JSON queries yet
-- no OR groups, parentheses, or compound boolean logic yet
+- no parentheses / grouped precedence yet
+- no NOT queries yet
 - no field-level or secondary indexes beyond equality indexes and per-collection sorted key slices
 - no interactive merge resolution during repair
 - no scheduled background maintenance worker yet
 
-## Roadmap After V3.6
+## Roadmap After V3.7
 
 - configurable automatic snapshot/compaction policies
 - stronger lock stale-state recovery
 - richer validation / repair tooling
 - optional collection namespaces
-- deeper document-oriented helpers and boolean query composition
+- deeper document-oriented helpers and grouped boolean query precedence
 - import tooling and richer non-SQL query workflows

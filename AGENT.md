@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v3.5 in progress
+- MiniDB Studio v3.7 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -112,6 +112,20 @@
   - background indexing workers
   - remote/cloud features
 
+## V3.7 Scope
+- Boolean OR support across JSON query groups
+- Existing space-separated conditions remain AND within one group
+- `FINDIN collection cond cond OR cond cond` console support
+- Explorer JSON query expressions support the same OR syntax
+- Sorted-key union across OR groups while reusing existing indexed filtering
+- Tests for OR behavior, mixed operators with OR, nested paths with OR, and invalid syntax
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - parentheses / grouped precedence
+  - NOT queries
+  - background indexing workers
+  - remote/cloud features
+
 ## Proposed File Changes
 - Keep:
   - `internal/app`
@@ -197,5 +211,5 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v3.6 is focused on richer non-SQL JSON query operators.
-- After that lands, future work can focus on OR groups, import/query workflows, and background maintenance workers.
+- MiniDB Studio v3.7 is focused on boolean OR composition for JSON queries.
+- After that lands, future work can focus on grouped precedence, NOT queries, import/query workflows, and background maintenance workers.

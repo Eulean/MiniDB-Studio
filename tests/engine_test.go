@@ -573,6 +573,36 @@ func TestJSONQueryOperatorsForContainsNumericAndArrayMembership(t *testing.T) {
 	}
 }
 
+func TestJSONQueryExpressionWithOR(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"score":95},"tags":["admin"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"score":82},"tags":["reviewer"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"score":70},"tags":["guest"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	expression := engine.JSONQueryExpression{
+		{
+			{Path: "active", Operator: "=", Value: "true"},
+		},
+		{
+			{Path: "profile.score", Operator: ">=", Value: "80"},
+			{Path: "tags", Operator: "=", Value: "reviewer"},
+		},
+	}
+	matches := db.FindKeysByJSONExpressionInCollection("docs", "", expression)
+	want := []string{"profile:1", "profile:2"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected OR expression matches: got=%v want=%v", matches, want)
+	}
+}
+
 func TestJSONFieldIndexUpdatesAcrossOverwriteDeleteAndReopen(t *testing.T) {
 	db, dir := openTestDB(t)
 
@@ -645,6 +675,43 @@ func TestFindInCommandWithOperators(t *testing.T) {
 	}
 	if !strings.Contains(result, "1 matches") || !strings.Contains(result, "profile") {
 		t.Fatalf("unexpected operator FINDIN result: %q", result)
+	}
+}
+
+func TestFindInCommandWithOR(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"score":95},"tags":["admin"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"score":82},"tags":["reviewer"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+
+	result, err := db.Execute("FINDIN docs active=true OR profile.score>=80 tags=reviewer")
+	if err != nil {
+		t.Fatalf("execute OR FINDIN: %v", err)
+	}
+	if !strings.Contains(result, "2 matches") || !strings.Contains(result, "profile:1") || !strings.Contains(result, "profile:2") {
+		t.Fatalf("unexpected OR FINDIN result: %q", result)
+	}
+}
+
+func TestParseJSONQueryExpressionRejectsInvalidORSyntax(t *testing.T) {
+	_, err := engine.ParseJSONQueryExpression("OR active=true")
+	if err == nil {
+		t.Fatal("expected invalid leading OR to fail")
+	}
+
+	_, err = engine.ParseJSONQueryExpression("active=true OR OR tags=admin")
+	if err == nil {
+		t.Fatal("expected repeated OR to fail")
+	}
+
+	_, err = engine.ParseJSONQueryExpression("active=true OR")
+	if err == nil {
+		t.Fatal("expected trailing OR to fail")
 	}
 }
 

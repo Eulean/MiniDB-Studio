@@ -157,7 +157,7 @@ MiniDB Studio is a native desktop app built with Go and Fyne around a custom app
 - local single-process durable storage
 - collections and paged browsing
 - JSON-aware records
-- nested JSON path lookup with multi-condition operators
+- nested JSON path lookup with AND/OR query expressions
 - validation, export, repair, backup, and compaction
 - legacy local-data migration and stale-lock recovery
 
@@ -172,6 +172,7 @@ MiniDB Studio is a native desktop app built with Go and Fyne around a custom app
 - KEYSIN collection [prefix]
 - SETJSON collection key json-value
 - FINDIN collection path=value path>=value path~=value
+- FINDIN collection cond cond OR cond cond
 - STATS
 - COMPACT
 - SNAPSHOT
@@ -182,7 +183,7 @@ MiniDB Studio is a native desktop app built with Go and Fyne around a custom app
 ## Desktop Smoke Test
 1. Launch the app and let the Explorer load.
 2. Create a record from Data Explorer.
-3. Run a console command such as STATS or FINDIN docs profile.score>=90 tags=admin.
+3. Run a console command such as STATS or FINDIN docs active=true OR profile.score>=90.
 4. Open Maintenance and verify stats appear.
 5. Close and relaunch to confirm persistence.
 

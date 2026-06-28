@@ -28,7 +28,7 @@ func NewConsolePage(window fyne.Window, application *studioapp.Application, onSt
 	}
 
 	page.commandInput = widget.NewMultiLineEntry()
-	page.commandInput.SetPlaceHolder("Examples:\nSET customer:1 Alice Smith\nSETIN users 42 Alice Smith\nSETJSON docs profile {\"profile\":{\"email\":\"ada@example.com\",\"score\":95},\"tags\":[\"admin\"],\"active\":true}\nFINDIN docs profile.email=ada@example.com active=true\nFINDIN docs profile.score>=90 tags=admin\nFINDIN docs profile.bio~=local\nCOLLECTIONS\nKEYSIN users user:\nSTATS")
+	page.commandInput.SetPlaceHolder("Examples:\nSET customer:1 Alice Smith\nSETIN users 42 Alice Smith\nSETJSON docs profile {\"profile\":{\"email\":\"ada@example.com\",\"score\":95},\"tags\":[\"admin\"],\"active\":true}\nFINDIN docs profile.email=ada@example.com active=true\nFINDIN docs active=true OR profile.score>=90\nFINDIN docs profile.bio~=local OR tags=admin\nCOLLECTIONS\nKEYSIN users user:\nSTATS")
 	page.commandInput.Wrapping = fyne.TextWrapWord
 	page.commandInput.SetMinRowsVisible(8)
 

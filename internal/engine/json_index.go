@@ -114,6 +114,49 @@ func ParseJSONQueryConditions(queryText string) ([]JSONQueryCondition, error) {
 	return conditions, nil
 }
 
+// ParseJSONQueryExpression parses OR-separated condition groups.
+// Conditions inside one group remain ANDed together.
+func ParseJSONQueryExpression(queryText string) (JSONQueryExpression, error) {
+	queryText = strings.TrimSpace(queryText)
+	if queryText == "" {
+		return nil, nil
+	}
+
+	parts := strings.Fields(queryText)
+	groups := make(JSONQueryExpression, 0, 1)
+	currentGroup := make([]string, 0, len(parts))
+
+	flushGroup := func() error {
+		if len(currentGroup) == 0 {
+			return fmt.Errorf("invalid JSON query expression: OR must appear between condition groups")
+		}
+
+		conditions, err := ParseJSONQueryConditions(strings.Join(currentGroup, " "))
+		if err != nil {
+			return err
+		}
+		groups = append(groups, conditions)
+		currentGroup = currentGroup[:0]
+		return nil
+	}
+
+	for _, part := range parts {
+		if strings.EqualFold(part, "OR") {
+			if err := flushGroup(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		currentGroup = append(currentGroup, part)
+	}
+
+	if err := flushGroup(); err != nil {
+		return nil, err
+	}
+
+	return groups, nil
+}
+
 func splitJSONQueryCondition(part string) (string, string, string, error) {
 	operators := []string{">=", "<=", "~=", ">", "<", "="}
 	for _, operator := range operators {

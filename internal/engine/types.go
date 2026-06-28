@@ -74,6 +74,10 @@ type JSONQueryCondition struct {
 	Value    string
 }
 
+// JSONQueryExpression is an OR-of-ANDs query structure.
+// Each inner slice is one AND group, and groups are combined with OR.
+type JSONQueryExpression [][]JSONQueryCondition
+
 // Stats describes the current durable and in-memory database state.
 type Stats struct {
 	LiveKeyCount       int

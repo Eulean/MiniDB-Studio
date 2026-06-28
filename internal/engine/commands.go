@@ -253,19 +253,26 @@ func (db *DB) CountRecordsInCollection(collection, prefix string) int {
 
 // CountRecordsByJSONFieldInCollection returns the number of live records matching one indexed JSON field.
 func (db *DB) CountRecordsByJSONFieldInCollection(collection, prefix, field, value string) int {
-	return db.CountRecordsByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
-		Path:     strings.TrimSpace(field),
-		Operator: "=",
-		Value:    value,
+	return db.CountRecordsByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{{
+		{
+			Path:     strings.TrimSpace(field),
+			Operator: "=",
+			Value:    value,
+		},
 	}})
 }
 
 // CountRecordsByJSONConditionsInCollection returns the number of live records matching every JSON predicate.
 func (db *DB) CountRecordsByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition) int {
+	return db.CountRecordsByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{conditions})
+}
+
+// CountRecordsByJSONExpressionInCollection returns the number of live records matching the JSON expression.
+func (db *DB) CountRecordsByJSONExpressionInCollection(collection, prefix string, expression JSONQueryExpression) int {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return len(db.findKeysByJSONConditionsLocked(normalizeCollection(collection), strings.TrimSpace(prefix), conditions))
+	return len(db.findKeysByJSONExpressionLocked(normalizeCollection(collection), strings.TrimSpace(prefix), expression))
 }
 
 // Records returns explorer rows with lazy value preview loading and optional pagination.
@@ -327,18 +334,25 @@ func (db *DB) RecordsInCollection(collection, prefix string, offset int, limit i
 
 // RecordsByJSONFieldInCollection returns paged records filtered by one indexed JSON field.
 func (db *DB) RecordsByJSONFieldInCollection(collection, prefix, field, value string, offset int, limit int) []Record {
-	return db.RecordsByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
-		Path:     strings.TrimSpace(field),
-		Operator: "=",
-		Value:    value,
+	return db.RecordsByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{{
+		{
+			Path:     strings.TrimSpace(field),
+			Operator: "=",
+			Value:    value,
+		},
 	}}, offset, limit)
 }
 
 // RecordsByJSONConditionsInCollection returns paged records filtered by every JSON predicate.
 func (db *DB) RecordsByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition, offset int, limit int) []Record {
+	return db.RecordsByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{conditions}, offset, limit)
+}
+
+// RecordsByJSONExpressionInCollection returns paged records filtered by an OR-of-ANDs JSON expression.
+func (db *DB) RecordsByJSONExpressionInCollection(collection, prefix string, expression JSONQueryExpression, offset int, limit int) []Record {
 	db.mu.RLock()
 	collection = normalizeCollection(collection)
-	matchedKeys := db.findKeysByJSONConditionsLocked(collection, strings.TrimSpace(prefix), conditions)
+	matchedKeys := db.findKeysByJSONExpressionLocked(collection, strings.TrimSpace(prefix), expression)
 
 	if offset < 0 {
 		offset = 0
@@ -387,19 +401,26 @@ func (db *DB) RecordsByJSONConditionsInCollection(collection, prefix string, con
 
 // FindKeysByJSONFieldInCollection returns sorted live keys for one JSON equality query.
 func (db *DB) FindKeysByJSONFieldInCollection(collection, prefix, field, value string) []string {
-	return db.FindKeysByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
-		Path:     strings.TrimSpace(field),
-		Operator: "=",
-		Value:    value,
+	return db.FindKeysByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{{
+		{
+			Path:     strings.TrimSpace(field),
+			Operator: "=",
+			Value:    value,
+		},
 	}})
 }
 
 // FindKeysByJSONConditionsInCollection returns sorted live keys for every JSON equality query.
 func (db *DB) FindKeysByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition) []string {
+	return db.FindKeysByJSONExpressionInCollection(collection, prefix, JSONQueryExpression{conditions})
+}
+
+// FindKeysByJSONExpressionInCollection returns sorted live keys for an OR-of-ANDs JSON expression.
+func (db *DB) FindKeysByJSONExpressionInCollection(collection, prefix string, expression JSONQueryExpression) []string {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return append([]string(nil), db.findKeysByJSONConditionsLocked(normalizeCollection(collection), strings.TrimSpace(prefix), conditions)...)
+	return append([]string(nil), db.findKeysByJSONExpressionLocked(normalizeCollection(collection), strings.TrimSpace(prefix), expression)...)
 }
 
 func (db *DB) findKeysByJSONConditionsLocked(collection, prefix string, conditions []JSONQueryCondition) []string {
@@ -471,6 +492,20 @@ func (db *DB) findKeysByJSONConditionsLocked(collection, prefix string, conditio
 	return filtered
 }
 
+func (db *DB) findKeysByJSONExpressionLocked(collection, prefix string, expression JSONQueryExpression) []string {
+	if len(expression) == 0 {
+		return []string{}
+	}
+
+	union := make([]string, 0)
+	for _, group := range expression {
+		groupMatches := db.findKeysByJSONConditionsLocked(collection, prefix, group)
+		union = unionSortedKeys(union, groupMatches)
+	}
+
+	return union
+}
+
 func recordMatchesJSONConditions(entry indexEntry, conditions []JSONQueryCondition) bool {
 	for _, condition := range conditions {
 		values := entry.JSONFields[strings.TrimSpace(condition.Path)]
@@ -504,6 +539,36 @@ func intersectSortedKeys(left, right []string) []string {
 	}
 
 	return intersection
+}
+
+func unionSortedKeys(left, right []string) []string {
+	union := make([]string, 0, len(left)+len(right))
+	leftIndex := 0
+	rightIndex := 0
+
+	for leftIndex < len(left) && rightIndex < len(right) {
+		switch {
+		case left[leftIndex] == right[rightIndex]:
+			union = append(union, left[leftIndex])
+			leftIndex++
+			rightIndex++
+		case left[leftIndex] < right[rightIndex]:
+			union = append(union, left[leftIndex])
+			leftIndex++
+		default:
+			union = append(union, right[rightIndex])
+			rightIndex++
+		}
+	}
+
+	for ; leftIndex < len(left); leftIndex++ {
+		union = append(union, left[leftIndex])
+	}
+	for ; rightIndex < len(right); rightIndex++ {
+		union = append(union, right[rightIndex])
+	}
+
+	return union
 }
 
 func minInt(left, right int) int {
@@ -651,11 +716,11 @@ func (db *DB) Execute(input string) (string, error) {
 		}
 		return strings.Join(db.KeysInCollection(collection, prefix), "\n"), nil
 	case strings.HasPrefix(upper, "FINDIN "):
-		collection, conditions, err := parseFindInCommand(commandText)
+		collection, expression, err := parseFindInCommand(commandText)
 		if err != nil {
 			return "", err
 		}
-		matches := db.RecordsByJSONConditionsInCollection(collection, "", conditions, 0, 100)
+		matches := db.RecordsByJSONExpressionInCollection(collection, "", expression, 0, 100)
 		if len(matches) == 0 {
 			return "0 matches", nil
 		}
@@ -802,7 +867,7 @@ func parseCollectionPrefixCommand(commandText string, verb string) (string, stri
 	return collection, prefix, nil
 }
 
-func parseFindInCommand(commandText string) (string, []JSONQueryCondition, error) {
+func parseFindInCommand(commandText string) (string, JSONQueryExpression, error) {
 	rest := strings.TrimSpace(commandText[len("FINDIN"):])
 	firstSpace := strings.IndexAny(rest, " \t")
 	if firstSpace == -1 {
@@ -815,15 +880,15 @@ func parseFindInCommand(commandText string) (string, []JSONQueryCondition, error
 		return "", nil, err
 	}
 
-	conditions, err := ParseJSONQueryConditions(queryText)
+	expression, err := ParseJSONQueryExpression(queryText)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(conditions) == 0 {
+	if len(expression) == 0 {
 		return "", nil, fmt.Errorf("FINDIN requires at least one path=value condition")
 	}
 
-	return collection, conditions, nil
+	return collection, expression, nil
 }
 
 func parseBatchCommand(commandText string) ([]BatchOperation, error) {

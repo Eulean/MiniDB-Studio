@@ -58,7 +58,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		page.Refresh()
 	}
 	page.queryEntry = widget.NewEntry()
-	page.queryEntry.SetPlaceHolder("JSON query: profile.email=ada@example.com active=true")
+	page.queryEntry.SetPlaceHolder("JSON query: active=true OR profile.score>=90")
 	page.queryEntry.OnChanged = func(string) {
 		page.currentPage = 0
 		page.Refresh()
