@@ -3,57 +3,103 @@ package engine
 import (
 	"fmt"
 	"io"
+	"os"
 )
 
-// replayLog rebuilds the in-memory index and counters from durable records.
-func (db *DB) replayLog() error {
-	if _, err := db.logFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("seek log file for replay: %w", err)
-	}
+// recoverState loads the latest snapshot first, then replays segment records newer than the snapshot cutoff.
+func (db *DB) recoverState() error {
+	db.index = make(map[string]indexEntry)
+	reconstructCounters := db.metadata.TotalSetOperations == 0 &&
+		db.metadata.TotalDeleteOps == 0 &&
+		db.metadata.NextSequence == 1
 
-	reader, err := newRecordReader(db.logFile)
+	snapshotSequence, err := db.loadSnapshotLocked()
 	if err != nil {
 		return err
 	}
 
-	index := make(map[string]string)
-	setOps := db.setOps
-	deleteOps := db.deleteOps
-	var replayedRecords uint64
+	segmentPaths, err := db.segmentPaths()
+	if err != nil {
+		return err
+	}
 
+	var replayedRecords uint64
+	for _, path := range segmentPaths {
+		replayedFromSegment, err := db.replaySegment(path, snapshotSequence, reconstructCounters)
+		if err != nil {
+			return err
+		}
+		replayedRecords += replayedFromSegment
+	}
+
+	db.metadata.StartupReplayCount = replayedRecords
+	return nil
+}
+
+func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCounters bool) (uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open segment %q for replay: %w", path, err)
+	}
+	defer file.Close()
+
+	reader, err := newFrameReader(file, true)
+	if err != nil {
+		return 0, err
+	}
+
+	var replayed uint64
 	for {
-		record, err := reader.next()
+		frame, err := reader.next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			return 0, fmt.Errorf("replay segment %q: %w", path, err)
 		}
-		replayedRecords++
 
-		switch record.Command {
-		case commandSet:
-			index[record.Key] = record.Value
-			if replayedRecords > db.snapshotRecordCount {
-				setOps++
+		batch, err := decodeMutationBatch(frame)
+		if err != nil {
+			return 0, fmt.Errorf("replay segment %q: %w", path, err)
+		}
+
+		for operationIndex, operation := range batch.Operations {
+			if operation.Sequence <= snapshotSequence {
+				continue
 			}
-		case commandDelete:
-			delete(index, record.Key)
-			if replayedRecords > db.snapshotRecordCount {
-				deleteOps++
+
+			if operation.Sequence >= db.metadata.NextSequence {
+				db.metadata.NextSequence = operation.Sequence + 1
 			}
-		default:
-			return fmt.Errorf("log recovery error: unknown command %q", record.Command)
+
+			switch operation.Command {
+			case commandSet:
+				db.index[operation.Key] = indexEntry{
+					Key:          operation.Key,
+					SourceType:   sourceTypeSegment,
+					SourcePath:   path,
+					FrameOffset:  frame.Offset,
+					OperationIdx: operationIndex,
+					ValueSize:    operation.ValueSize,
+					CreatedAt:    operation.CreatedAt,
+					UpdatedAt:    operation.UpdatedAt,
+					LastSequence: operation.Sequence,
+				}
+				if reconstructCounters {
+					db.metadata.TotalSetOperations++
+				}
+			case commandDelete:
+				delete(db.index, operation.Key)
+				if reconstructCounters {
+					db.metadata.TotalDeleteOps++
+				}
+			default:
+				return 0, fmt.Errorf("log recovery error: unknown command %q", operation.Command)
+			}
+
+			replayed++
 		}
 	}
 
-	db.index = index
-	db.setOps = setOps
-	db.deleteOps = deleteOps
-
-	if _, err := db.logFile.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("seek log file to end after replay: %w", err)
-	}
-
-	return nil
+	return replayed, nil
 }

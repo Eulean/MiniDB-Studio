@@ -46,12 +46,17 @@ func (a *Application) DataDir() string {
 
 // ListRecords returns live records for the explorer page.
 func (a *Application) ListRecords(prefix string) []engine.Record {
-	return a.db.Records(prefix)
+	return a.db.Records(prefix, 0, 250)
 }
 
 // GetRecord returns one record value for details or editing.
 func (a *Application) GetRecord(key string) (string, bool) {
 	return a.db.Get(key)
+}
+
+// GetRecordMetadata returns the metadata shown in the explorer details panel.
+func (a *Application) GetRecordMetadata(key string) (engine.EntryMetadata, bool) {
+	return a.db.GetRecordMetadata(key)
 }
 
 // SaveRecord creates or updates a key-value pair and updates status text.
@@ -77,13 +82,10 @@ func (a *Application) RenameRecord(oldKey, newKey, value string) error {
 		return a.SaveRecord(newKey, value)
 	}
 
-	if err := a.db.Set(newKey, value); err != nil {
-		a.state.SetCurrentStatus("Rename failed")
-		a.state.SetLastResult(err.Error())
-		return err
-	}
-
-	if err := a.db.Delete(oldKey); err != nil {
+	if err := a.db.ApplyBatch([]engine.BatchOperation{
+		{Command: "SET", Key: newKey, Value: value},
+		{Command: "DELETE", Key: oldKey},
+	}); err != nil {
 		a.state.SetCurrentStatus("Rename failed")
 		a.state.SetLastResult(err.Error())
 		return err
@@ -136,6 +138,37 @@ func (a *Application) CommandHistory() string {
 // Stats returns database statistics for the maintenance page.
 func (a *Application) Stats() (engine.Stats, error) {
 	return a.db.Stats()
+}
+
+// Snapshot creates a crash-safe snapshot of the current live database state.
+func (a *Application) Snapshot() error {
+	a.state.SetCurrentStatus("Creating snapshot...")
+
+	if err := a.db.Snapshot(); err != nil {
+		a.state.SetCurrentStatus("Snapshot failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult("Snapshot created")
+	return nil
+}
+
+// Validate inspects the snapshot and segment files and returns the validation report.
+func (a *Application) Validate() (engine.ValidationReport, error) {
+	a.state.SetCurrentStatus("Validating database...")
+
+	report, err := a.db.Validate()
+	if err != nil {
+		a.state.SetCurrentStatus("Validation failed")
+		a.state.SetLastResult(err.Error())
+		return engine.ValidationReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult("Validation completed")
+	return report, nil
 }
 
 // Compact runs durable log compaction and updates status text.

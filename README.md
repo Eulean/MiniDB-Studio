@@ -1,23 +1,26 @@
 # MiniDB Studio
 
-MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom persistent key-value engine written from scratch with the Go standard library.
+MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This is MiniDB v1:
-- local single-process storage
-- append-only durability
-- in-memory indexing
-- replay-based recovery
-- manual compaction
-- native desktop management tools
+This repository now targets MiniDB v2:
+- single-process file locking
+- segmented append-only storage
+- offset-based in-memory index
+- crash-safe snapshots
+- replay recovery
+- compaction
+- validation and diagnostics
+- atomic batch writes
+- native desktop management UI
 
-It is intentionally not a SQL database, network service, or distributed system yet.
+It is intentionally not a SQL server, network service, or distributed database.
 
 ## Project Purpose
 
 MiniDB Studio has two goals:
 
-1. Teach how a small durable database engine can be built from first principles.
-2. Provide a practical native desktop tool for managing that engine locally on Windows.
+1. Teach how a small durable database can be built from first principles.
+2. Provide a practical Windows-first native desktop tool for exploring and operating that database locally.
 
 ## Architecture Diagram
 
@@ -25,38 +28,44 @@ MiniDB Studio has two goals:
 MiniDB Studio Desktop App
 |
 +-- cmd/minidb
-|   +-- desktop entrypoint
+|   +-- tagged desktop entrypoint
+|   +-- non-desktop validation stub
 |
 +-- internal/ui
 |   +-- MainWindow
 |   +-- Data Explorer page
 |   +-- Command Console page
 |   +-- Maintenance page
-|   +-- Record dialogs
+|   +-- dialogs
 |
 +-- internal/app
-|   +-- Application orchestration
-|   +-- UI-facing state and status
+|   +-- UI orchestration
+|   +-- shared app state / status
 |
 +-- internal/engine
 |   +-- DB lifecycle
-|   +-- Commands (SET/GET/DELETE/KEYS/STATS/COMPACT)
-|   +-- Append-only log writer
-|   +-- Startup recovery / replay
-|   +-- Compaction
-|   +-- Statistics and metadata
+|   +-- file locking
+|   +-- framed record format
+|   +-- segmented logs
+|   +-- snapshot creation / loading
+|   +-- startup recovery
+|   +-- validation
+|   +-- compaction
+|   +-- stats
+|   +-- command execution
 |
 +-- internal/storage
-|   +-- Windows-first app-data path resolution
+|   +-- app-data path resolution
 |
 +-- tests
-    +-- engine unit tests
+    +-- engine integration tests
 ```
 
 ## Final File Tree
 
 ```text
 minidb-studio/
+  .gitignore
   AGENT.md
   README.md
   go.mod
@@ -65,9 +74,6 @@ minidb-studio/
     minidb/
       main_desktop.go
       main_stub.go
-  scripts/
-    build-desktop.ps1
-    setup-local-zig.ps1
   internal/
     app/
       application.go
@@ -76,10 +82,15 @@ minidb-studio/
       commands.go
       compact.go
       db.go
+      lock.go
       log.go
       metadata_codec.go
       recovery.go
+      segments.go
+      snapshot.go
       stats.go
+      types.go
+      validate.go
     storage/
       paths.go
     ui/
@@ -88,6 +99,9 @@ minidb-studio/
       explorer_page.go
       main_window.go
       maintenance_page.go
+  scripts/
+    build-desktop.ps1
+    setup-local-zig.ps1
   tests/
     engine_test.go
 ```
@@ -98,7 +112,7 @@ minidb-studio/
 
 - Go 1.23 or newer
 - Windows is the primary target
-- For running the native Fyne desktop build, install a working C toolchain in `PATH` because Fyne's desktop driver depends on CGO on Windows
+- For the real desktop build, CGO plus a working C/C++ compiler is required
 
 ### Clone And Prepare
 
@@ -110,7 +124,7 @@ go mod tidy
 
 ## How Persistence Works
 
-MiniDB stores data in a local application-data folder instead of beside the executable.
+MiniDB stores data in the local application-data folder instead of beside the executable.
 
 On Windows the default location is:
 
@@ -118,56 +132,84 @@ On Windows the default location is:
 %LOCALAPPDATA%\MiniDB Studio
 ```
 
-The engine uses:
+### Durable Files
 
-- `minidb.log` for the append-only operation log
-- `minidb.meta.json` for durable metadata such as compaction time and operation counters
+- `minidb.meta.json`
+  - durable counters
+  - next sequence
+  - active segment id
+  - snapshot / compaction timestamps
+- `minidb.lock`
+  - prevents two MiniDB processes from opening the same DB directory at once
+- `segment-000001.log`, `segment-000002.log`, ...
+  - append-only mutation segments
+- `snapshot.dat`
+  - crash-safe materialized snapshot of current live state
+
+### Record Format
+
+Each durable frame uses:
+
+1. 4-byte magic header
+2. 4-byte payload length
+3. JSON payload
+4. 4-byte CRC32 checksum
+
+This allows:
+- values with spaces and newlines
+- corruption detection
+- safe ignoring of only the incomplete final record
 
 ### Write Path
 
-For `SET` and `DELETE`:
+For `SET`, `DELETE`, and `BATCH`:
 
-1. Build a durable record.
-2. Encode it as:
-   - 4-byte magic header
-   - 4-byte payload length
-   - JSON payload
-   - 4-byte CRC32 checksum
-3. Append it to the log.
-4. Call `Sync`.
-5. Update the in-memory index.
+1. Build one durable mutation batch payload.
+2. Append it to the active segment.
+3. Sync the segment.
+4. Update the in-memory index only after the durable write succeeds.
+5. Persist metadata with an atomic temp-file swap.
 
 ### Read Path
 
-- Reads come from an in-memory `map[string]string`.
-- `sync.RWMutex` protects concurrent access inside one process.
+- The in-memory index stores metadata and file offsets, not full values by default.
+- `GET` loads the value lazily from the referenced snapshot or segment frame.
+- Explorer previews also load values lazily.
 
 ### Recovery Path
 
 On startup:
 
-1. Open the log.
-2. Replay records in order.
-3. Rebuild the in-memory index.
-4. Recalculate live state.
+1. Acquire the DB lock.
+2. Load metadata.
+3. Load the latest valid snapshot if present.
+4. Replay only segment operations newer than the snapshot sequence.
+5. Rebuild the offset-based index.
 
-If the final record is incomplete because of an unexpected shutdown, MiniDB ignores only that final incomplete record.
+If the final frame is incomplete because of an interrupted write, MiniDB ignores only that final incomplete frame.
 
-If corruption is detected earlier in the log, startup returns a clear recovery error.
+If corruption appears earlier in storage, startup returns a clear recovery error.
+
+### Snapshot Path
+
+`SNAPSHOT`:
+
+1. Writes a temporary snapshot file.
+2. Syncs it.
+3. Atomically replaces the old snapshot.
+4. Stores the latest snapshot sequence and timestamp in metadata.
 
 ### Compaction Path
 
 `COMPACT`:
 
-1. Writes only live records into a temporary compacted log.
-2. Syncs the compacted file.
-3. Safely replaces the old log.
-4. Reloads the in-memory state.
-5. Stores the last compaction timestamp.
+1. Reads current live entries.
+2. Rewrites them into a fresh compacted segment.
+3. Removes obsolete segments.
+4. Clears stale snapshot replay assumptions.
+5. Records the last compaction time.
 
 ## Supported Commands
-
-The command console supports one command at a time:
 
 - `SET key value`
 - `GET key`
@@ -176,73 +218,82 @@ The command console supports one command at a time:
 - `KEYS prefix`
 - `STATS`
 - `COMPACT`
+- `SNAPSHOT`
+- `VALIDATE`
+- `BATCH ... END`
 
-Notes:
+### Batch Example
 
-- Keys cannot be empty.
-- Values may contain spaces.
-- Values may contain newlines when entered in the multi-line console input.
+```text
+BATCH
+SET user:1 Alice
+SET user:2 Bob Smith
+DELETE user:3
+END
+```
 
 ## Desktop Features
 
 ### Data Explorer
 
-- Filter by key prefix
-- Browse records in a two-column table
-- View full record details
-- Create records
-- Edit records
-- Delete records with confirmation
+- filter by key prefix
+- browse keys with value preview, size, and updated time
+- view full value details
+- view per-record metadata
+- create records
+- edit records
+- delete records with confirmation
 
 ### Command Console
 
-- Multi-line input
-- Run one command at a time
-- Monospace output/history panel
-- Readable error reporting
+- multi-line input
+- one command at a time unless explicit `BATCH`
+- monospace output/history
+- readable errors
 
 ### Maintenance
 
-- View stats
-- Compact the database
-- Create a backup of the durable log
-- Open the local data folder
+- show live/storage statistics
+- create snapshot
+- validate database files
+- compact database
+- create backup archive
+- open data folder
 
 ### Status Bar
 
-- Database location
-- Current status
-- Last operation result
+- database location
+- current status
+- last operation result
 
 ## Run The App
 
 ### Default Non-Desktop Entrypoint
 
-This keeps `go test ./...` and `go vet ./...` green in environments without Fyne desktop build prerequisites:
+This keeps `go test ./...` and `go vet ./...` green in environments without desktop build prerequisites:
 
 ```powershell
 go run ./cmd/minidb
 ```
 
-### Native Desktop App
-
-To run the real Fyne desktop app:
+### Native Desktop App With Local Zig Toolchain
 
 ```powershell
+.\scripts\setup-local-zig.ps1
 $env:CGO_ENABLED="1"
+$env:CC="C:\zig-local\zig.exe cc"
+$env:CXX="C:\zig-local\zig.exe c++"
 go run -tags desktop ./cmd/minidb
 ```
 
-If CGO or a C compiler is not installed, the desktop build will not start until that toolchain is available.
-
-## Package A Windows Executable
-
-### Build With Go
+### Run The Built Executable
 
 ```powershell
-$env:CGO_ENABLED="1"
-go build -tags desktop -o .\dist\MiniDBStudio.exe ./cmd/minidb
+.\scripts\build-desktop.ps1
+.\dist\MiniDBStudio.exe
 ```
+
+## Package A Windows Executable
 
 ### Build With The Included Helper Scripts
 
@@ -251,13 +302,22 @@ go build -tags desktop -o .\dist\MiniDBStudio.exe ./cmd/minidb
 .\scripts\build-desktop.ps1
 ```
 
-These scripts install a local Zig toolchain at `C:\zig-local` and use it as the CGO compiler for the Fyne desktop build.
+### Manual Build With Go
+
+```powershell
+$env:CGO_ENABLED="1"
+$env:CC="C:\zig-local\zig.exe cc"
+$env:CXX="C:\zig-local\zig.exe c++"
+go build -tags desktop -o .\dist\MiniDBStudio.exe ./cmd/minidb
+```
 
 ### Package With Fyne CLI
 
 ```powershell
 go install fyne.io/tools/cmd/fyne@latest
 $env:CGO_ENABLED="1"
+$env:CC="C:\zig-local\zig.exe cc"
+$env:CXX="C:\zig-local\zig.exe c++"
 fyne package -tags desktop -os windows -name "MiniDB Studio"
 ```
 
@@ -270,39 +330,45 @@ go test ./...
 go vet ./...
 ```
 
-Note:
-
-- The real desktop executable build was implemented but could not be fully compiled in this workspace because the local environment does not currently have a usable C compiler in `PATH` for CGO.
-- That gap is now handled with a verified local Zig-based build path:
+The native desktop executable was also rebuilt successfully with:
 
 ```powershell
-$env:CGO_ENABLED="1"
-$env:CC="C:\zig-local\zig.exe cc"
-$env:CXX="C:\zig-local\zig.exe c++"
-go build -tags desktop ./cmd/minidb
+.\scripts\build-desktop.ps1
 ```
 
-## Limitations Of v1
+## Implemented V2 Features
 
-- No SQL parser
-- No networking
-- No authentication
-- No multi-user access
-- No replication
-- No distributed storage
-- No cloud sync
-- No transactions
-- No secondary indexes
-- No background compaction scheduler
-- No schema or typed records
+- single-process lock file protection
+- snapshot create/load path
+- segmented append-only logs
+- offset-based live index
+- lazy value reads
+- batch writes
+- validation command
+- richer stats
+- backup archive generation
+- record metadata in the explorer
+- maintenance actions for snapshot and validation
 
-## Roadmap For v2
+## Current Limitations
 
-- Better command parsing with quoted keys and values
-- Batch command execution
-- Import and export tools
-- Optional snapshots
-- Background compaction suggestions
-- Safer key rename workflow
-- Stronger log repair tooling
-- Richer desktop search and sort tools
+- no SQL
+- no networking
+- no authentication
+- no replication
+- no distributed storage
+- no cloud sync
+- no server-mode multi-user support
+- no transactions beyond single durable batch frames
+- no background snapshot scheduler
+- no secondary indexes
+- no query planner or schema system
+
+## Roadmap After V2
+
+- page-based explorer navigation for very large keyspaces
+- configurable automatic snapshot/compaction policies
+- stronger lock stale-state recovery
+- richer validation / repair tooling
+- optional collection namespaces
+- document-oriented helpers on top of the KV engine

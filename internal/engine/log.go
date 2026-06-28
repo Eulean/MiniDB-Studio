@@ -7,130 +7,152 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
-	"time"
 )
 
-var recordMagic = [4]byte{'M', 'D', 'B', '1'}
-
-const (
-	commandSet    = "SET"
-	commandDelete = "DELETE"
-)
-
-// logRecord is the durable unit written to the append-only log.
-// The payload is JSON so the structure stays readable and extensible.
-type logRecord struct {
-	Command   string    `json:"command"`
-	Key       string    `json:"key"`
-	Value     string    `json:"value,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+// frameReader streams framed payloads from disk and detects corruption or interrupted final writes.
+type frameReader struct {
+	file                   *os.File
+	fileSize               int64
+	offset                 int64
+	tolerateIncompleteTail bool
 }
 
-// appendRecord writes a framed record and forces the bytes to durable storage.
-func appendRecord(file *os.File, record logRecord) error {
-	payload, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal log record: %w", err)
-	}
-
-	checksum := crc32.ChecksumIEEE(payload)
-	header := make([]byte, 8)
-	copy(header[:4], recordMagic[:])
-	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
-
-	if _, err := file.Write(header); err != nil {
-		return fmt.Errorf("write log header: %w", err)
-	}
-
-	if _, err := file.Write(payload); err != nil {
-		return fmt.Errorf("write log payload: %w", err)
-	}
-
-	trailer := make([]byte, 4)
-	binary.BigEndian.PutUint32(trailer, checksum)
-
-	if _, err := file.Write(trailer); err != nil {
-		return fmt.Errorf("write log checksum: %w", err)
-	}
-
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync log file: %w", err)
-	}
-
-	return nil
+// framedPayload is the decoded boundary information for one durable frame.
+type framedPayload struct {
+	Offset  int64
+	Payload []byte
 }
 
-// recordReader streams framed records from disk and validates their checksum.
-type recordReader struct {
-	file     *os.File
-	fileSize int64
-	offset   int64
-}
-
-func newRecordReader(file *os.File) (*recordReader, error) {
+func newFrameReader(file *os.File, tolerateIncompleteTail bool) (*frameReader, error) {
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat log file: %w", err)
+		return nil, fmt.Errorf("stat framed file: %w", err)
 	}
 
-	return &recordReader{
-		file:     file,
-		fileSize: info.Size(),
+	return &frameReader{
+		file:                   file,
+		fileSize:               info.Size(),
+		tolerateIncompleteTail: tolerateIncompleteTail,
 	}, nil
 }
 
-// next returns the next valid record, signals io.EOF when cleanly finished,
-// and ignores only a truncated final record caused by an interrupted write.
-func (r *recordReader) next() (logRecord, error) {
-	var record logRecord
-
+// next returns the next payload or io.EOF when the file is cleanly exhausted.
+// A truncated final frame is treated as EOF so interrupted final writes are ignored safely.
+func (r *frameReader) next() (framedPayload, error) {
+	frame := framedPayload{}
 	if r.offset >= r.fileSize {
-		return record, io.EOF
+		return frame, io.EOF
 	}
 
+	startOffset := r.offset
 	header := make([]byte, 8)
 	if _, err := io.ReadFull(r.file, header); err != nil {
-		return record, r.classifyReadError("read record header", err)
+		return frame, r.classifyReadError("read frame header", err)
 	}
 	r.offset += int64(len(header))
 
-	if string(header[:4]) != string(recordMagic[:]) {
-		return record, fmt.Errorf("log recovery error at offset %d: invalid record magic", r.offset-int64(len(header)))
+	if string(header[:4]) != frameMagic {
+		return frame, fmt.Errorf("log recovery error at offset %d: invalid frame magic", startOffset)
 	}
 
 	payloadLength := binary.BigEndian.Uint32(header[4:])
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(r.file, payload); err != nil {
-		return record, r.classifyReadError("read record payload", err)
+		return frame, r.classifyReadError("read frame payload", err)
 	}
 	r.offset += int64(len(payload))
 
 	checksumBytes := make([]byte, 4)
 	if _, err := io.ReadFull(r.file, checksumBytes); err != nil {
-		return record, r.classifyReadError("read record checksum", err)
+		return frame, r.classifyReadError("read frame checksum", err)
 	}
 	r.offset += int64(len(checksumBytes))
 
 	expectedChecksum := binary.BigEndian.Uint32(checksumBytes)
 	actualChecksum := crc32.ChecksumIEEE(payload)
 	if expectedChecksum != actualChecksum {
-		return record, fmt.Errorf("log recovery error at offset %d: checksum mismatch", r.offset-int64(len(payload)+len(checksumBytes)))
+		return frame, fmt.Errorf("log recovery error at offset %d: checksum mismatch", startOffset)
 	}
 
-	if err := json.Unmarshal(payload, &record); err != nil {
-		return record, fmt.Errorf("log recovery error at offset %d: decode record: %w", r.offset-int64(len(payload)+len(checksumBytes)), err)
-	}
-
-	return record, nil
+	return framedPayload{
+		Offset:  startOffset,
+		Payload: payload,
+	}, nil
 }
 
-// classifyReadError decides whether EOF means an interrupted final record or a real recovery failure.
-func (r *recordReader) classifyReadError(action string, err error) error {
+func (r *frameReader) classifyReadError(action string, err error) error {
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		if r.offset < r.fileSize {
+		// Only the final incomplete frame is ignored.
+		if r.tolerateIncompleteTail && r.offset < r.fileSize {
 			return io.EOF
 		}
 	}
 
 	return fmt.Errorf("log recovery error at offset %d: %s: %w", r.offset, action, err)
+}
+
+// appendJSONFrame writes one framed JSON payload, syncs it, and returns the starting offset.
+func appendJSONFrame(file *os.File, value any) (int64, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("marshal framed payload: %w", err)
+	}
+
+	startOffset, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, fmt.Errorf("seek file before append: %w", err)
+	}
+
+	header := make([]byte, 8)
+	copy(header[:4], []byte(frameMagic))
+	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+
+	if _, err := file.Write(header); err != nil {
+		return 0, fmt.Errorf("write frame header: %w", err)
+	}
+
+	if _, err := file.Write(payload); err != nil {
+		return 0, fmt.Errorf("write frame payload: %w", err)
+	}
+
+	checksumBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(checksumBytes, crc32.ChecksumIEEE(payload))
+	if _, err := file.Write(checksumBytes); err != nil {
+		return 0, fmt.Errorf("write frame checksum: %w", err)
+	}
+
+	if err := file.Sync(); err != nil {
+		return 0, fmt.Errorf("sync framed file: %w", err)
+	}
+
+	return startOffset, nil
+}
+
+func readJSONFrameAt(path string, offset int64, destination any) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open framed file %q: %w", path, err)
+	}
+	defer file.Close()
+
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek framed file %q: %w", path, err)
+	}
+
+	reader, err := newFrameReader(file, false)
+	if err != nil {
+		return err
+	}
+	reader.offset = offset
+
+	frame, err := reader.next()
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(frame.Payload, destination); err != nil {
+		return fmt.Errorf("decode framed payload at offset %d: %w", offset, err)
+	}
+
+	return nil
 }

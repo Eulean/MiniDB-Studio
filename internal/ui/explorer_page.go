@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	studioapp "minidb-studio/internal/app"
 	"minidb-studio/internal/engine"
@@ -23,6 +24,7 @@ type ExplorerPage struct {
 	filterEntry     *widget.Entry
 	table           *widget.Table
 	detailKey       *widget.Label
+	detailMeta      *widget.Label
 	detailValue     *widget.Entry
 	editButton      *widget.Button
 	deleteButton    *widget.Button
@@ -70,7 +72,8 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 			return
 		}
 
-		showRecordEditorDialog(window, "Edit Record", record.Key, record.Value, func(key, value string) error {
+		initialValue, _ := application.GetRecord(record.Key)
+		showRecordEditorDialog(window, "Edit Record", record.Key, initialValue, func(key, value string) error {
 			if err := application.RenameRecord(record.Key, key, value); err != nil {
 				return err
 			}
@@ -113,25 +116,33 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		func(id widget.TableCellID, object fyne.CanvasObject) {
 			label := object.(*widget.Label)
 			record := page.records[id.Row]
-			if id.Col == 0 {
+			switch id.Col {
+			case 0:
 				label.SetText(record.Key)
-				return
+			case 1:
+				label.SetText(record.ValuePreview)
+			case 2:
+				label.SetText(fmt.Sprintf("%d", record.ValueSize))
+			case 3:
+				label.SetText(formatRecordTime(record.UpdatedAt))
 			}
-
-			label.SetText(valuePreview(record.Value))
 		},
 	)
 	page.table.SetColumnWidth(0, 240)
-	page.table.SetColumnWidth(1, 420)
+	page.table.SetColumnWidth(1, 360)
+	page.table.SetColumnWidth(2, 90)
+	page.table.SetColumnWidth(3, 170)
 	page.table.OnSelected = func(id widget.TableCellID) {
 		page.selectedRow = id.Row
 		page.refreshDetails()
 	}
 
 	tableHeader := container.NewGridWithColumns(
-		2,
+		4,
 		widget.NewLabelWithStyle("Key", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		widget.NewLabelWithStyle("Value Preview", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Size", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Updated", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
 
 	toolbar := container.NewHBox(
@@ -152,6 +163,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	)
 
 	page.detailKey = widget.NewLabel("No record selected")
+	page.detailMeta = widget.NewLabel("")
 	page.detailValue = widget.NewMultiLineEntry()
 	page.detailValue.Disable()
 	page.detailValue.Wrapping = fyne.TextWrapWord
@@ -161,6 +173,8 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		widget.NewLabelWithStyle("Record Details", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		widget.NewLabel("Selected Key"),
 		page.detailKey,
+		widget.NewLabel("Metadata"),
+		page.detailMeta,
 		widget.NewSeparator(),
 		widget.NewLabel("Full Value"),
 		page.detailValue,
@@ -195,6 +209,7 @@ func (p *ExplorerPage) refreshDetails() {
 	record, ok := p.selectedRecord()
 	if !ok {
 		p.detailKey.SetText("No record selected")
+		p.detailMeta.SetText("")
 		p.detailValue.SetText("")
 		p.editButton.Disable()
 		p.deleteButton.Disable()
@@ -202,8 +217,18 @@ func (p *ExplorerPage) refreshDetails() {
 	}
 
 	p.detailKey.SetText(record.Key)
+	if metadata, ok := p.application.GetRecordMetadata(record.Key); ok {
+		p.detailMeta.SetText(fmt.Sprintf(
+			"Size: %d bytes\nCreated: %s\nUpdated: %s\nSequence: %d",
+			metadata.ValueSize,
+			formatRecordTime(metadata.CreatedAt),
+			formatRecordTime(metadata.UpdatedAt),
+			metadata.LastSequence,
+		))
+	}
+	fullValue, _ := p.application.GetRecord(record.Key)
 	p.detailValue.Enable()
-	p.detailValue.SetText(record.Value)
+	p.detailValue.SetText(fullValue)
 	p.detailValue.Disable()
 	p.editButton.Enable()
 	p.deleteButton.Enable()
@@ -229,13 +254,10 @@ func (p *ExplorerPage) selectByKey(key string) {
 	p.selectedRow = -1
 	p.refreshDetails()
 }
-
-func valuePreview(value string) string {
-	singleLine := strings.ReplaceAll(value, "\r\n", "\n")
-	singleLine = strings.ReplaceAll(singleLine, "\n", "\\n")
-	if len(singleLine) <= 72 {
-		return singleLine
+func formatRecordTime(timestamp time.Time) string {
+	if timestamp.IsZero() {
+		return "Unknown"
 	}
 
-	return fmt.Sprintf("%s...", singleLine[:72])
+	return timestamp.Local().Format("2006-01-02 15:04:05")
 }

@@ -1,52 +1,91 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- Project complete for MiniDB Studio v1
+- MiniDB Studio v2 in progress
 
 ## Goals In Progress
-- Scaffold the Go module and project layout. Completed.
-- Build the MiniDB append-only key-value engine from scratch. Completed.
-- Add unit tests for persistence, recovery, compaction, and concurrency. Completed.
-- Build the native Fyne desktop UI with working explorer, console, maintenance, and about pages. Completed.
-- Finalize README and delivery notes. Completed.
+- Preserve the existing v1 desktop app and upgrade the storage engine in place. Completed.
+- Add single-process locking, snapshots, segmented logs, offset-based indexing, validation, and batch writes. Completed.
+- Expand tests first for engine correctness, then extend the Fyne UI and docs. Completed.
 
 ## Architecture Direction
-- UI framework: Fyne v2 for the native desktop shell in a later phase.
-- Database engine: custom append-only log plus in-memory index.
-- Durability: every mutating command appends a framed record and calls `Sync`.
-- Recovery: replay the log on startup; ignore only an incomplete final record.
-- Storage location: application data folder, not the executable directory.
+- UI framework remains Fyne v2.
+- Application orchestration remains in `internal/app`.
+- The engine will move from a single log file to:
+  - segmented append-only log files
+  - one active writable segment
+  - a crash-safe snapshot file
+  - an offset-based in-memory index
+- Values will no longer live in memory by default; the index will store file locations plus metadata.
+- Storage location remains the application data directory.
 
 ## Current Decisions
-- Log records will use a binary frame:
-  - 4-byte magic header
-  - 4-byte payload length
-  - JSON payload
-  - 4-byte CRC32 checksum
-- This lets us safely store values with spaces and newlines, detect corruption, and distinguish incomplete trailing data.
-- Compaction metadata will be stored in a small sidecar metadata file so last compaction time survives restarts.
-- Operation totals are also stored in metadata so compaction does not reset historical stats.
-- Compaction swaps files in a Windows-safe way by moving the old log aside before renaming the compacted file into place.
-- The runnable desktop entrypoint is behind the `desktop` build tag so default `go test ./...` and `go vet ./...` work in environments that do not have Fyne desktop build prerequisites installed.
+- Keep the framed binary record format because it already gives:
+  - clear boundaries
+  - newline-safe values
+  - incomplete-tail detection
+  - checksum verification
+- Extend records with:
+  - sequence number
+  - created/updated timestamps
+  - value size
+  - batch operation support
+- Add one metadata file to track durable counters and timestamps.
+- Use one snapshot file plus numbered segment files.
+- Use a lock file to prevent multiple active opens for the same database directory.
+- Preserve the `desktop` build tag and Zig-based CGO build flow.
+
+## Proposed File Changes
+- Keep:
+  - `internal/app`
+  - `internal/ui`
+  - `internal/storage`
+- Refactor and extend `internal/engine` with:
+  - `types.go`
+  - `segments.go`
+  - `snapshot.go`
+  - `lock.go`
+  - `validate.go`
+  - updated `db.go`, `commands.go`, `compact.go`, `recovery.go`, `stats.go`, `log.go`
+- Expand `tests/engine_test.go` rather than splitting immediately unless complexity forces a follow-up split.
+
+## V2 Implementation Order
+1. Rebuild the engine around segments, snapshots, and offset-based entries.
+2. Add file locking, validation, and atomic batch writes.
+3. Expand tests for recovery, segmentation, lazy reads, and locking.
+4. Extend the Fyne UI for metadata, snapshot, and validation actions.
+5. Update README and re-run all validation plus desktop build verification.
 
 ## Validation
 - `go test ./...` passed.
 - `go vet ./...` passed.
-- The first `go test` occasionally hit a transient Windows file-handle cleanup issue while removing a temporary test executable, but reruns passed cleanly and it did not reflect a project bug.
-- The tagged desktop build was verified successfully in this workspace using Zig as a local CGO compiler:
-  - `CGO_ENABLED=1`
-  - `CC="C:\zig-local\zig.exe cc"`
-  - `CXX="C:\zig-local\zig.exe c++"`
+- `.\scripts\build-desktop.ps1` completed successfully after the v2 engine/UI refactor.
+- The transient Windows temporary test-executable cleanup issue may still appear occasionally on the first run, but reruns pass cleanly and the tests themselves are green.
 
 ## Deliverables Completed
-- `internal/storage`: app-data path resolution for Windows-first local storage.
-- `internal/engine`: open/close, set/get/delete, key listing, stats, command execution, recovery, and compaction.
-- `internal/app`: application orchestration and UI-facing shared state.
-- `internal/ui`: native Fyne window, navigation, explorer, console, maintenance, dialogs, and about page.
-- `tests`: unit coverage for persistence, replay, corruption handling, compaction, prefix filtering, and concurrency.
-- `cmd/minidb`: stub entrypoint for default validation plus tagged desktop entrypoint for the actual native app.
-- `scripts`: helper scripts for setting up a local Zig toolchain and building the native desktop executable.
-- `.gitignore`: ignores generated desktop binaries and downloaded local toolchains.
+- v1 project scaffolding, engine, desktop UI, tests, scripts, and documentation remain available as the baseline.
+- v2 engine refactor:
+  - lock file handling
+  - segmented logs
+  - snapshot creation/loading
+  - offset-based index entries
+  - validation reporting
+  - atomic batch operations
+  - expanded stats
+- v2 UI updates:
+  - explorer metadata and richer record listing
+  - maintenance buttons for snapshot and validation
+  - backup archives for the full durable store
+- v2 tests:
+  - locking
+  - snapshots
+  - segmented recovery
+  - validation behavior
+  - batch atomicity
+  - compaction
+  - corruption handling
+  - concurrent access
 
 ## Next Steps
-- Optional future work belongs to MiniDB Studio v2, not this v1 delivery.
+- MiniDB Studio v2 is now in a releasable state.
+- Future work belongs to post-v2 enhancements rather than core delivery fixes.

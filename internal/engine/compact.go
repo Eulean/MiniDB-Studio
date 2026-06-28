@@ -8,77 +8,125 @@ import (
 	"time"
 )
 
-// Compact rewrites only live records into a fresh log, swaps it in safely, and reloads state.
+// Compact rewrites only live records into a fresh segment set and removes obsolete segments.
 func (db *DB) Compact() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
-	tempPath := filepath.Join(db.dataDir, "minidb.log.compacting")
-	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("create compacted log: %w", err)
-	}
 
 	keys := make([]string, 0, len(db.index))
 	for key := range db.index {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return db.index[keys[i]].LastSequence < db.index[keys[j]].LastSequence
+	})
 
+	type compactedEntry struct {
+		key   string
+		entry indexEntry
+		value string
+	}
+
+	liveEntries := make([]compactedEntry, 0, len(keys))
 	for _, key := range keys {
-		value := db.index[key]
-		record := logRecord{
-			Command:   commandSet,
-			Key:       key,
-			Value:     value,
-			Timestamp: time.Now().UTC(),
+		entry := db.index[key]
+		value, err := db.readValueForEntry(entry)
+		if err != nil {
+			return fmt.Errorf("load value for compaction key %q: %w", key, err)
+		}
+		liveEntries = append(liveEntries, compactedEntry{
+			key:   key,
+			entry: entry,
+			value: value,
+		})
+	}
+
+	newSegmentID := db.metadata.NextSegmentID
+	tempPath := filepath.Join(db.dataDir, fmt.Sprintf("segment-%06d.compacting", newSegmentID))
+	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("create compacted segment: %w", err)
+	}
+
+	replacementIndex := make(map[string]indexEntry, len(liveEntries))
+	segmentPathFinal := segmentPath(db.dataDir, newSegmentID)
+	for _, item := range liveEntries {
+		record := mutationBatch{
+			Kind:        payloadKindMutation,
+			CommittedAt: time.Now().UTC(),
+			Operations: []persistedOperation{{
+				Sequence:  item.entry.LastSequence,
+				Command:   commandSet,
+				Key:       item.key,
+				Value:     item.value,
+				ValueSize: item.entry.ValueSize,
+				CreatedAt: item.entry.CreatedAt,
+				UpdatedAt: item.entry.UpdatedAt,
+			}},
 		}
 
-		if err := appendRecord(tempFile, record); err != nil {
+		offset, err := appendJSONFrame(tempFile, record)
+		if err != nil {
 			tempFile.Close()
-			return fmt.Errorf("write compacted record for %q: %w", key, err)
+			return fmt.Errorf("write compacted entry %q: %w", item.key, err)
+		}
+
+		replacementIndex[item.key] = indexEntry{
+			Key:          item.key,
+			SourceType:   sourceTypeSegment,
+			SourcePath:   segmentPathFinal,
+			FrameOffset:  offset,
+			OperationIdx: 0,
+			ValueSize:    item.entry.ValueSize,
+			CreatedAt:    item.entry.CreatedAt,
+			UpdatedAt:    item.entry.UpdatedAt,
+			LastSequence: item.entry.LastSequence,
 		}
 	}
 
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
-		return fmt.Errorf("sync compacted log: %w", err)
+		return fmt.Errorf("sync compacted segment: %w", err)
 	}
 
 	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("close compacted log: %w", err)
+		return fmt.Errorf("close compacted segment: %w", err)
 	}
 
-	if err := db.logFile.Close(); err != nil {
-		return fmt.Errorf("close original log before swap: %w", err)
-	}
-
-	backupPath := filepath.Join(db.dataDir, "minidb.log.pre-compact")
-	_ = os.Remove(backupPath)
-	if err := os.Rename(db.logPath, backupPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("move original log before swap: %w", err)
-	}
-
-	if err := os.Rename(tempPath, db.logPath); err != nil {
-		return fmt.Errorf("replace log with compacted version: %w", err)
-	}
-	_ = os.Remove(backupPath)
-
-	logFile, err := os.OpenFile(db.logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	oldSegmentPaths, err := db.segmentPaths()
 	if err != nil {
-		return fmt.Errorf("reopen log after compaction: %w", err)
-	}
-	db.logFile = logFile
-
-	db.lastCompactionTime = time.Now().UTC()
-	db.snapshotRecordCount = uint64(len(keys))
-	if err := db.saveMetadata(); err != nil {
 		return err
 	}
 
-	if err := db.replayLog(); err != nil {
-		return fmt.Errorf("reload state after compaction: %w", err)
+	if err := db.activeSegment.Close(); err != nil {
+		return fmt.Errorf("close active segment before compaction swap: %w", err)
 	}
 
-	return nil
+	if err := os.Rename(tempPath, segmentPathFinal); err != nil {
+		return fmt.Errorf("rename compacted segment: %w", err)
+	}
+
+	for _, oldPath := range oldSegmentPaths {
+		if oldPath == segmentPathFinal {
+			continue
+		}
+		_ = os.Remove(oldPath)
+	}
+
+	// Compaction resets snapshot replay assumptions so the fresh segment set can replay from zero cleanly.
+	_ = os.Remove(db.snapshotPath)
+	db.metadata.LastSnapshotSeq = 0
+	db.index = replacementIndex
+	db.activeSegmentID = newSegmentID
+	db.metadata.ActiveSegmentID = newSegmentID
+	db.metadata.NextSegmentID = newSegmentID + 1
+	db.metadata.LastCompactionTime = time.Now().UTC()
+
+	file, err := os.OpenFile(segmentPathFinal, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("reopen compacted segment: %w", err)
+	}
+	db.activeSegment = file
+
+	return db.saveMetadata()
 }
