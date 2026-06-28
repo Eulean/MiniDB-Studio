@@ -1,12 +1,12 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v2 in progress
+- MiniDB Studio v3.2 in progress
 
 ## Goals In Progress
-- Preserve the existing v1 desktop app and upgrade the storage engine in place. Completed.
-- Add single-process locking, snapshots, segmented logs, offset-based indexing, validation, and batch writes. Completed.
-- Expand tests first for engine correctness, then extend the Fyne UI and docs. Completed.
+- Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
+- Preserve the current local embedded architecture while improving operational maturity. Completed for v3.2 scope.
+- Extend the maintenance UI and console around the new repair/export engine APIs. Completed.
 
 ## Architecture Direction
 - UI framework remains Fyne v2.
@@ -34,6 +34,30 @@
 - Use one snapshot file plus numbered segment files.
 - Use a lock file to prevent multiple active opens for the same database directory.
 - Preserve the `desktop` build tag and Zig-based CGO build flow.
+- Introduce collections at the engine layer instead of faking them only in the UI.
+- Keep the existing framed storage format and enrich payloads with collection and value-kind metadata.
+- Add JSON validation as an optional record kind instead of replacing plain text storage.
+
+## V3.1 Scope
+- First-class collections
+- Collection-aware commands and explorer browsing
+- Paged record listing
+- JSON-aware record creation/editing with validation
+- Tests and docs for the above
+- Explicitly not yet in this slice:
+  - background maintenance scheduler
+  - repair/export workflows
+  - secondary indexes beyond collection-aware listing
+
+## V3.2 Scope
+- Safe export for one collection or the entire database
+- Repair/salvage into a fresh database directory
+- Maintenance recommendation heuristics
+- Maintenance UI and console support for the above
+- Explicitly not yet in this slice:
+  - automatic background workers
+  - field-level document indexing
+  - remote/cloud features
 
 ## Proposed File Changes
 - Keep:
@@ -60,6 +84,8 @@
 - `go test ./...` passed.
 - `go vet ./...` passed.
 - `.\scripts\build-desktop.ps1` completed successfully after the v2 engine/UI refactor.
+- `.\scripts\build-desktop.ps1` still completes successfully after the v3.1 collections and JSON-aware UI changes.
+- `.\scripts\build-desktop.ps1` also completes successfully after the v3.2 repair/export and maintenance UI changes.
 - The transient Windows temporary test-executable cleanup issue may still appear occasionally on the first run, but reruns pass cleanly and the tests themselves are green.
 
 ## Deliverables Completed
@@ -85,7 +111,33 @@
   - compaction
   - corruption handling
   - concurrent access
+- v3.1 engine updates:
+  - first-class collections
+  - collection-aware commands
+  - paged listing support
+  - JSON-aware value-kind metadata and validation
+- v3.1 UI updates:
+  - collection selector in explorer
+  - paged browsing controls
+  - collection/value-kind aware record editing
+- v3.1 tests:
+  - collection separation
+  - collection paging
+  - JSON validation and metadata
+  - collection-aware batch commands
+- v3.2 engine updates:
+  - NDJSON export
+  - repair/salvage into a fresh destination DB
+  - maintenance recommendation heuristics
+- v3.2 UI updates:
+  - maintenance health display
+  - export action
+  - repair action
+- v3.2 tests:
+  - export
+  - repair salvage
+  - maintenance recommendations
 
 ## Next Steps
-- MiniDB Studio v2 is now in a releasable state.
-- Future work belongs to post-v2 enhancements rather than core delivery fixes.
+- MiniDB Studio v3.2 is now in a usable checkpoint state.
+- Future work can focus on background maintenance workers, richer repair/export flows, and stronger indexing.

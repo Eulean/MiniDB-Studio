@@ -232,6 +232,186 @@ func TestRecordsLazyPreview(t *testing.T) {
 	}
 }
 
+func TestCollectionsAreSeparated(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetInCollection("users", "1", "Alice"); err != nil {
+		t.Fatalf("set users/1: %v", err)
+	}
+	if err := db.SetInCollection("orders", "1", "Order-1"); err != nil {
+		t.Fatalf("set orders/1: %v", err)
+	}
+
+	userValue, ok := db.GetFromCollection("users", "1")
+	if !ok || userValue != "Alice" {
+		t.Fatalf("unexpected users/1 value: %q ok=%v", userValue, ok)
+	}
+
+	orderValue, ok := db.GetFromCollection("orders", "1")
+	if !ok || orderValue != "Order-1" {
+		t.Fatalf("unexpected orders/1 value: %q ok=%v", orderValue, ok)
+	}
+
+	collections := db.Collections()
+	if len(collections) < 2 {
+		t.Fatalf("expected multiple collections, got %#v", collections)
+	}
+}
+
+func TestPagedCollectionListing(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	for i := 0; i < 7; i++ {
+		if err := db.SetInCollection("users", fmt.Sprintf("user:%d", i), "value"); err != nil {
+			t.Fatalf("set paged record %d: %v", i, err)
+		}
+	}
+
+	pageOne := db.RecordsInCollection("users", "", 0, 3)
+	pageTwo := db.RecordsInCollection("users", "", 3, 3)
+	if len(pageOne) != 3 || len(pageTwo) != 3 {
+		t.Fatalf("unexpected page lengths: %d %d", len(pageOne), len(pageTwo))
+	}
+	if pageOne[0].Key == pageTwo[0].Key {
+		t.Fatalf("expected different records across pages, got %q", pageOne[0].Key)
+	}
+	if db.CountRecordsInCollection("users", "") != 7 {
+		t.Fatalf("unexpected collection count")
+	}
+}
+
+func TestJSONValidationAndMetadata(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile", `{"name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set json record: %v", err)
+	}
+
+	if err := db.SetTypedInCollection("docs", "bad", `{"name":`, engine.ValueKindJSON); err == nil {
+		t.Fatal("expected invalid json to fail")
+	}
+
+	metadata, ok := db.GetRecordMetadataInCollection("docs", "profile")
+	if !ok {
+		t.Fatal("expected metadata for docs/profile")
+	}
+	if metadata.ValueKind != engine.ValueKindJSON {
+		t.Fatalf("expected json kind, got %q", metadata.ValueKind)
+	}
+}
+
+func TestExportCollectionAndAll(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetInCollection("users", "1", "Alice"); err != nil {
+		t.Fatalf("set users/1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile", `{"name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile: %v", err)
+	}
+
+	usersExport := filepath.Join(dir, "users.jsonl")
+	report, err := db.ExportCollection("users", usersExport)
+	if err != nil {
+		t.Fatalf("export users: %v", err)
+	}
+	if report.ExportedRecords != 1 {
+		t.Fatalf("expected one exported user record, got %d", report.ExportedRecords)
+	}
+
+	allExport := filepath.Join(dir, "all.jsonl")
+	report, err = db.ExportCollection("all", allExport)
+	if err != nil {
+		t.Fatalf("export all: %v", err)
+	}
+	if report.ExportedRecords != 2 {
+		t.Fatalf("expected two exported records, got %d", report.ExportedRecords)
+	}
+
+	data, err := os.ReadFile(allExport)
+	if err != nil {
+		t.Fatalf("read export file: %v", err)
+	}
+	if !strings.Contains(string(data), `"collection":"users"`) || !strings.Contains(string(data), `"collection":"docs"`) {
+		t.Fatalf("unexpected export contents: %s", string(data))
+	}
+}
+
+func TestRepairSalvagesValidRecords(t *testing.T) {
+	db, dir := openTestDB(t)
+
+	if err := db.SetInCollection("users", "1", "Alice"); err != nil {
+		t.Fatalf("set users/1: %v", err)
+	}
+	if err := db.SetInCollection("users", "2", "Bob"); err != nil {
+		t.Fatalf("set users/2: %v", err)
+	}
+
+	segmentPath := filepath.Join(dir, "segment-000001.log")
+	file, err := os.OpenFile(segmentPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open segment: %v", err)
+	}
+	if _, err := file.Write([]byte("BROKEN")); err != nil {
+		t.Fatalf("append broken bytes: %v", err)
+	}
+	file.Close()
+
+	repairDir := filepath.Join(dir, "repaired-db")
+	report, err := db.RepairTo(repairDir)
+	if err != nil {
+		t.Fatalf("repair db: %v", err)
+	}
+	if report.RecoveredRecords != 2 {
+		t.Fatalf("expected two recovered records, got %d", report.RecoveredRecords)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close original db: %v", err)
+	}
+
+	repaired, err := engine.OpenInDir(repairDir)
+	if err != nil {
+		t.Fatalf("open repaired db: %v", err)
+	}
+	defer repaired.Close()
+
+	value, ok := repaired.GetFromCollection("users", "1")
+	if !ok || value != "Alice" {
+		t.Fatalf("unexpected repaired users/1 value: %q ok=%v", value, ok)
+	}
+}
+
+func TestMaintenanceRecommendations(t *testing.T) {
+	db, _ := openTestDBWithOptions(t, engine.OpenOptions{SegmentSizeLimit: 220})
+	defer db.Close()
+
+	largeValue := strings.Repeat("z", 180)
+	for i := 0; i < 12; i++ {
+		if err := db.SetInCollection("users", fmt.Sprintf("user:%d", i), largeValue); err != nil {
+			t.Fatalf("set maintenance record %d: %v", i, err)
+		}
+	}
+
+	report, err := db.MaintenanceReport()
+	if err != nil {
+		t.Fatalf("maintenance report: %v", err)
+	}
+	if !report.SnapshotRecommended {
+		t.Fatal("expected snapshot recommendation")
+	}
+	if !report.CompactionRecommended {
+		t.Fatal("expected compaction recommendation")
+	}
+	if len(report.Recommendations) == 0 {
+		t.Fatal("expected at least one recommendation")
+	}
+}
+
 func TestBatchAtomicity(t *testing.T) {
 	db, _ := openTestDB(t)
 	defer db.Close()
@@ -264,6 +444,14 @@ func TestBatchAtomicity(t *testing.T) {
 
 	if _, ok := db.Get("user:2"); ok {
 		t.Fatal("expected user:2 to be deleted by batch command")
+	}
+
+	result, err = db.Execute("BATCH\nSETJSON docs profile {\"name\":\"Ada\"}\nSETIN users user:9 Zoe\nEND")
+	if err != nil {
+		t.Fatalf("execute collection-aware batch command: %v", err)
+	}
+	if result != "OK" {
+		t.Fatalf("unexpected collection-aware batch result: %q", result)
 	}
 }
 

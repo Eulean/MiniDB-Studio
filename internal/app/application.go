@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -44,47 +45,61 @@ func (a *Application) DataDir() string {
 	return a.db.DataDir()
 }
 
-// ListRecords returns live records for the explorer page.
-func (a *Application) ListRecords(prefix string) []engine.Record {
-	return a.db.Records(prefix, 0, 250)
+// ListCollections returns the current live collections for the explorer and console.
+func (a *Application) ListCollections() []string {
+	return a.db.Collections()
+}
+
+// ListRecords returns a paged set of live records for the explorer page.
+func (a *Application) ListRecords(collection, prefix string, page, pageSize int) ([]engine.Record, int) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+
+	offset := page * pageSize
+	total := a.db.CountRecordsInCollection(collection, prefix)
+	return a.db.RecordsInCollection(collection, prefix, offset, pageSize), total
 }
 
 // GetRecord returns one record value for details or editing.
-func (a *Application) GetRecord(key string) (string, bool) {
-	return a.db.Get(key)
+func (a *Application) GetRecord(collection, key string) (string, bool) {
+	return a.db.GetFromCollection(collection, key)
 }
 
 // GetRecordMetadata returns the metadata shown in the explorer details panel.
-func (a *Application) GetRecordMetadata(key string) (engine.EntryMetadata, bool) {
-	return a.db.GetRecordMetadata(key)
+func (a *Application) GetRecordMetadata(collection, key string) (engine.EntryMetadata, bool) {
+	return a.db.GetRecordMetadataInCollection(collection, key)
 }
 
 // SaveRecord creates or updates a key-value pair and updates status text.
-func (a *Application) SaveRecord(key, value string) error {
+func (a *Application) SaveRecord(collection, key, value, valueKind string) error {
 	a.state.SetCurrentStatus("Saving record...")
 
-	if err := a.db.Set(key, value); err != nil {
+	if err := a.db.SetTypedInCollection(collection, key, value, valueKind); err != nil {
 		a.state.SetCurrentStatus("Save failed")
 		a.state.SetLastResult(err.Error())
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
-	a.state.SetLastResult(fmt.Sprintf("Saved record %q", key))
+	a.state.SetLastResult(fmt.Sprintf("Saved record %q/%q", collection, key))
 	return nil
 }
 
 // RenameRecord handles a key rename by creating the new key and removing the old one.
-func (a *Application) RenameRecord(oldKey, newKey, value string) error {
+func (a *Application) RenameRecord(oldCollection, oldKey, newCollection, newKey, value, valueKind string) error {
 	a.state.SetCurrentStatus("Renaming record...")
 
-	if oldKey == newKey {
-		return a.SaveRecord(newKey, value)
+	if oldCollection == newCollection && oldKey == newKey {
+		return a.SaveRecord(newCollection, newKey, value, valueKind)
 	}
 
 	if err := a.db.ApplyBatch([]engine.BatchOperation{
-		{Command: "SET", Key: newKey, Value: value},
-		{Command: "DELETE", Key: oldKey},
+		{Command: "SET", Collection: newCollection, Key: newKey, Value: value, ValueKind: valueKind},
+		{Command: "DELETE", Collection: oldCollection, Key: oldKey},
 	}); err != nil {
 		a.state.SetCurrentStatus("Rename failed")
 		a.state.SetLastResult(err.Error())
@@ -92,22 +107,22 @@ func (a *Application) RenameRecord(oldKey, newKey, value string) error {
 	}
 
 	a.state.SetCurrentStatus("Ready")
-	a.state.SetLastResult(fmt.Sprintf("Renamed record %q to %q", oldKey, newKey))
+	a.state.SetLastResult(fmt.Sprintf("Renamed record %q/%q to %q/%q", oldCollection, oldKey, newCollection, newKey))
 	return nil
 }
 
 // DeleteRecord removes a key from the database and updates status text.
-func (a *Application) DeleteRecord(key string) error {
+func (a *Application) DeleteRecord(collection, key string) error {
 	a.state.SetCurrentStatus("Deleting record...")
 
-	if err := a.db.Delete(key); err != nil {
+	if err := a.db.DeleteFromCollection(collection, key); err != nil {
 		a.state.SetCurrentStatus("Delete failed")
 		a.state.SetLastResult(err.Error())
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
-	a.state.SetLastResult(fmt.Sprintf("Deleted record %q", key))
+	a.state.SetLastResult(fmt.Sprintf("Deleted record %q/%q", collection, key))
 	return nil
 }
 
@@ -171,6 +186,11 @@ func (a *Application) Validate() (engine.ValidationReport, error) {
 	return report, nil
 }
 
+// MaintenanceReport exposes recommendation heuristics for the maintenance page.
+func (a *Application) MaintenanceReport() (engine.MaintenanceReport, error) {
+	return a.db.MaintenanceReport()
+}
+
 // Compact runs durable log compaction and updates status text.
 func (a *Application) Compact() error {
 	a.state.SetCurrentStatus("Compacting database...")
@@ -199,6 +219,43 @@ func (a *Application) BackupToPath(path string) error {
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Backup created at %q", path))
 	return nil
+}
+
+// ExportCollection writes one collection or the full database to a chosen destination file.
+func (a *Application) ExportCollection(collection, path string) (engine.ExportReport, error) {
+	a.state.SetCurrentStatus("Exporting data...")
+
+	report, err := a.db.ExportCollection(collection, path)
+	if err != nil {
+		a.state.SetCurrentStatus("Export failed")
+		a.state.SetLastResult(err.Error())
+		return engine.ExportReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Export created at %q", path))
+	return report, nil
+}
+
+// DefaultRepairDir returns a sensible destination folder for salvage output.
+func (a *Application) DefaultRepairDir() string {
+	return filepath.Join(a.db.DataDir(), "repair-output")
+}
+
+// RepairTo salvages valid records into a fresh database directory.
+func (a *Application) RepairTo(path string) (engine.RepairReport, error) {
+	a.state.SetCurrentStatus("Repairing database...")
+
+	report, err := a.db.RepairTo(path)
+	if err != nil {
+		a.state.SetCurrentStatus("Repair failed")
+		a.state.SetLastResult(err.Error())
+		return engine.RepairReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Repair created at %q", path))
+	return report, nil
 }
 
 // OpenDataFolder launches the operating system file manager at the data folder.

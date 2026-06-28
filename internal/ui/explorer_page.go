@@ -17,19 +17,24 @@ import (
 
 // ExplorerPage owns the record browser, selection state, and editor actions.
 type ExplorerPage struct {
-	window          fyne.Window
-	application     *studioapp.Application
-	onStatusChanged func()
-	root            fyne.CanvasObject
-	filterEntry     *widget.Entry
-	table           *widget.Table
-	detailKey       *widget.Label
-	detailMeta      *widget.Label
-	detailValue     *widget.Entry
-	editButton      *widget.Button
-	deleteButton    *widget.Button
-	records         []engine.Record
-	selectedRow     int
+	window           fyne.Window
+	application      *studioapp.Application
+	onStatusChanged  func()
+	root             fyne.CanvasObject
+	collectionSelect *widget.Select
+	filterEntry      *widget.Entry
+	pageLabel        *widget.Label
+	table            *widget.Table
+	detailKey        *widget.Label
+	detailMeta       *widget.Label
+	detailValue      *widget.Entry
+	editButton       *widget.Button
+	deleteButton     *widget.Button
+	records          []engine.Record
+	selectedRow      int
+	currentPage      int
+	pageSize         int
+	totalRecords     int
 }
 
 // NewExplorerPage constructs the record explorer UI and wires up all actions.
@@ -40,13 +45,22 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		onStatusChanged: onStatusChanged,
 		selectedRow:     -1,
 		records:         make([]engine.Record, 0),
+		pageSize:        100,
 	}
+
+	page.collectionSelect = widget.NewSelect([]string{engine.DefaultCollection}, func(string) {
+		page.currentPage = 0
+		page.Refresh()
+	})
+	page.collectionSelect.SetSelected(engine.DefaultCollection)
 
 	page.filterEntry = widget.NewEntry()
 	page.filterEntry.SetPlaceHolder("Filter by key prefix")
 	page.filterEntry.OnChanged = func(string) {
+		page.currentPage = 0
 		page.Refresh()
 	}
+	page.pageLabel = widget.NewLabel("")
 
 	refreshButton := widget.NewButton("Refresh", func() {
 		page.Refresh()
@@ -55,8 +69,8 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	})
 
 	createButton := widget.NewButton("Create Record", func() {
-		showRecordEditorDialog(window, "Create Record", "", "", func(key, value string) error {
-			if err := application.SaveRecord(key, value); err != nil {
+		showRecordEditorDialog(window, "Create Record", selectedOrDefault(page.collectionSelect.Selected), "", engine.ValueKindRaw, "", func(collection, key, valueKind, value string) error {
+			if err := application.SaveRecord(collection, key, value, valueKind); err != nil {
 				return err
 			}
 			page.Refresh()
@@ -72,9 +86,9 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 			return
 		}
 
-		initialValue, _ := application.GetRecord(record.Key)
-		showRecordEditorDialog(window, "Edit Record", record.Key, initialValue, func(key, value string) error {
-			if err := application.RenameRecord(record.Key, key, value); err != nil {
+		initialValue, _ := application.GetRecord(record.Collection, record.Key)
+		showRecordEditorDialog(window, "Edit Record", record.Collection, record.Key, record.ValueKind, initialValue, func(collection, key, valueKind, value string) error {
+			if err := application.RenameRecord(record.Collection, record.Key, collection, key, value, valueKind); err != nil {
 				return err
 			}
 			page.Refresh()
@@ -92,7 +106,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		}
 
 		showDeleteConfirmation(window, record.Key, func() error {
-			if err := application.DeleteRecord(record.Key); err != nil {
+			if err := application.DeleteRecord(record.Collection, record.Key); err != nil {
 				return err
 			}
 			page.Refresh()
@@ -106,7 +120,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 
 	page.table = widget.NewTable(
 		func() (int, int) {
-			return len(page.records), 2
+			return len(page.records), 4
 		},
 		func() fyne.CanvasObject {
 			label := widget.NewLabel("")
@@ -146,8 +160,27 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	)
 
 	toolbar := container.NewHBox(
+		widget.NewLabel("Collection"),
+		page.collectionSelect,
 		page.filterEntry,
+		page.pageLabel,
 		layout.NewSpacer(),
+		widget.NewButton("Previous", func() {
+			if page.currentPage > 0 {
+				page.currentPage--
+				page.Refresh()
+			}
+		}),
+		widget.NewButton("Next", func() {
+			maxPage := 0
+			if page.totalRecords > 0 {
+				maxPage = (page.totalRecords - 1) / page.pageSize
+			}
+			if page.currentPage < maxPage {
+				page.currentPage++
+				page.Refresh()
+			}
+		}),
 		refreshButton,
 		createButton,
 		page.editButton,
@@ -195,12 +228,24 @@ func (p *ExplorerPage) CanvasObject() fyne.CanvasObject {
 
 // Refresh reloads records from the database using the current prefix filter.
 func (p *ExplorerPage) Refresh() {
-	p.records = p.application.ListRecords(strings.TrimSpace(p.filterEntry.Text))
+	collections := p.application.ListCollections()
+	p.collectionSelect.Options = collections
+	if p.collectionSelect.Selected == "" || !containsString(collections, p.collectionSelect.Selected) {
+		p.collectionSelect.SetSelected(selectedOrDefault(firstOrDefault(collections)))
+	}
+
+	p.records, p.totalRecords = p.application.ListRecords(selectedOrDefault(p.collectionSelect.Selected), strings.TrimSpace(p.filterEntry.Text), p.currentPage, p.pageSize)
 
 	if p.selectedRow >= len(p.records) {
 		p.selectedRow = -1
 	}
 
+	start := 0
+	if p.totalRecords > 0 {
+		start = p.currentPage*p.pageSize + 1
+	}
+	end := p.currentPage*p.pageSize + len(p.records)
+	p.pageLabel.SetText(fmt.Sprintf("Showing %d-%d of %d", start, end, p.totalRecords))
 	p.table.Refresh()
 	p.refreshDetails()
 }
@@ -217,16 +262,18 @@ func (p *ExplorerPage) refreshDetails() {
 	}
 
 	p.detailKey.SetText(record.Key)
-	if metadata, ok := p.application.GetRecordMetadata(record.Key); ok {
+	if metadata, ok := p.application.GetRecordMetadata(record.Collection, record.Key); ok {
 		p.detailMeta.SetText(fmt.Sprintf(
-			"Size: %d bytes\nCreated: %s\nUpdated: %s\nSequence: %d",
+			"Collection: %s\nKind: %s\nSize: %d bytes\nCreated: %s\nUpdated: %s\nSequence: %d",
+			metadata.Collection,
+			metadata.ValueKind,
 			metadata.ValueSize,
 			formatRecordTime(metadata.CreatedAt),
 			formatRecordTime(metadata.UpdatedAt),
 			metadata.LastSequence,
 		))
 	}
-	fullValue, _ := p.application.GetRecord(record.Key)
+	fullValue, _ := p.application.GetRecord(record.Collection, record.Key)
 	p.detailValue.Enable()
 	p.detailValue.SetText(fullValue)
 	p.detailValue.Disable()
@@ -260,4 +307,27 @@ func formatRecordTime(timestamp time.Time) string {
 	}
 
 	return timestamp.Local().Format("2006-01-02 15:04:05")
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func firstOrDefault(items []string) string {
+	if len(items) == 0 {
+		return engine.DefaultCollection
+	}
+	return items[0]
+}
+
+func selectedOrDefault(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return engine.DefaultCollection
+	}
+	return value
 }

@@ -3,7 +3,6 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -146,8 +145,12 @@ func (db *DB) appendMutationBatch(operations []persistedOperation) ([]indexEntry
 			continue
 		}
 
+		collection := normalizeCollection(operation.Collection)
 		entries = append(entries, indexEntry{
+			CanonicalKey: canonicalKey(collection, operation.Key),
+			Collection:   collection,
 			Key:          operation.Key,
+			ValueKind:    normalizeValueKind(operation.ValueKind),
 			SourceType:   sourceTypeSegment,
 			SourcePath:   sourcePath,
 			FrameOffset:  frameOffset,
@@ -196,12 +199,4 @@ func decodeMutationBatch(frame framedPayload) (mutationBatch, error) {
 		return mutationBatch{}, fmt.Errorf("unexpected payload kind %q in segment", batch.Kind)
 	}
 	return batch, nil
-}
-
-func copyValue(reader io.Reader) (string, error) {
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }

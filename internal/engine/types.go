@@ -17,6 +17,12 @@ const (
 	commandDelete = "DELETE"
 )
 
+const (
+	DefaultCollection = "default"
+	ValueKindRaw      = "raw"
+	ValueKindJSON     = "json"
+)
+
 // OpenOptions lets tests and future app features tune database internals safely.
 type OpenOptions struct {
 	SegmentSizeLimit int64
@@ -32,17 +38,21 @@ func (o OpenOptions) withDefaults() OpenOptions {
 
 // Record is the explorer-friendly view of one live key and its metadata.
 type Record struct {
+	Collection   string
 	Key          string
 	ValuePreview string
 	ValueSize    int
+	ValueKind    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
 // EntryMetadata is the full metadata view for one live record.
 type EntryMetadata struct {
+	Collection   string
 	Key          string
 	ValueSize    int
+	ValueKind    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	LastSequence uint64
@@ -50,9 +60,11 @@ type EntryMetadata struct {
 
 // BatchOperation is the public API for atomic multi-operation writes.
 type BatchOperation struct {
-	Command string
-	Key     string
-	Value   string
+	Command    string
+	Collection string
+	Key        string
+	Value      string
+	ValueKind  string
 }
 
 // Stats describes the current durable and in-memory database state.
@@ -81,9 +93,36 @@ type ValidationReport struct {
 	Warnings               []string
 }
 
+// ExportReport describes the result of exporting one collection or the whole database.
+type ExportReport struct {
+	DestinationPath string
+	Collection      string
+	ExportedRecords int
+}
+
+// RepairReport describes a salvage operation into a fresh database directory.
+type RepairReport struct {
+	DestinationDir   string
+	RecoveredRecords int
+	UsedSnapshot     bool
+	Warnings         []string
+}
+
+// MaintenanceReport summarizes health and recommendation signals for the maintenance UI.
+type MaintenanceReport struct {
+	Healthy               bool
+	Recommendations       []string
+	SnapshotRecommended   bool
+	CompactionRecommended bool
+	ValidationRecommended bool
+}
+
 // indexEntry is the in-memory pointer to the latest durable value for a key.
 type indexEntry struct {
+	CanonicalKey string    `json:"canonical_key"`
+	Collection   string    `json:"collection"`
 	Key          string    `json:"key"`
+	ValueKind    string    `json:"value_kind"`
 	SourceType   string    `json:"source_type"`
 	SourcePath   string    `json:"source_path"`
 	FrameOffset  int64     `json:"frame_offset"`
@@ -104,13 +143,15 @@ type mutationBatch struct {
 
 // persistedOperation is one SET or DELETE operation inside a durable mutation batch.
 type persistedOperation struct {
-	Sequence  uint64    `json:"sequence"`
-	Command   string    `json:"command"`
-	Key       string    `json:"key"`
-	Value     string    `json:"value,omitempty"`
-	ValueSize int       `json:"value_size"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Sequence   uint64    `json:"sequence"`
+	Command    string    `json:"command"`
+	Collection string    `json:"collection,omitempty"`
+	Key        string    `json:"key"`
+	Value      string    `json:"value,omitempty"`
+	ValueKind  string    `json:"value_kind,omitempty"`
+	ValueSize  int       `json:"value_size"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // snapshotHeader identifies the snapshot cutoff point and creation time.
@@ -122,13 +163,15 @@ type snapshotHeader struct {
 
 // snapshotEntry stores one fully materialized live key inside a snapshot file.
 type snapshotEntry struct {
-	Kind      string    `json:"kind"`
-	Sequence  uint64    `json:"sequence"`
-	Key       string    `json:"key"`
-	Value     string    `json:"value"`
-	ValueSize int       `json:"value_size"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Kind       string    `json:"kind"`
+	Sequence   uint64    `json:"sequence"`
+	Collection string    `json:"collection,omitempty"`
+	Key        string    `json:"key"`
+	Value      string    `json:"value"`
+	ValueKind  string    `json:"value_kind,omitempty"`
+	ValueSize  int       `json:"value_size"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // metadata persists counters, timestamps, and sequencing information across restarts.

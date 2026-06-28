@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v2:
+This repository now targets MiniDB v3.2:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -11,6 +11,12 @@ This repository now targets MiniDB v2:
 - compaction
 - validation and diagnostics
 - atomic batch writes
+- first-class collections
+- paged record browsing
+- JSON-aware records
+- export tooling
+- repair/salvage tooling
+- maintenance recommendations
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database.
@@ -53,6 +59,7 @@ MiniDB Studio Desktop App
 |   +-- compaction
 |   +-- stats
 |   +-- command execution
+|   +-- collections / document-aware records
 |
 +-- internal/storage
 |   +-- app-data path resolution
@@ -216,10 +223,19 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `DELETE key`
 - `KEYS`
 - `KEYS prefix`
+- `COLLECTIONS`
+- `SETIN collection key value`
+- `GETIN collection key`
+- `DELETEIN collection key`
+- `KEYSIN collection [prefix]`
+- `SETJSON collection key json-value`
 - `STATS`
 - `COMPACT`
 - `SNAPSHOT`
 - `VALIDATE`
+- `EXPORT collection`
+- `EXPORT ALL`
+- `REPAIR`
 - `BATCH ... END`
 
 ### Batch Example
@@ -236,10 +252,12 @@ END
 
 ### Data Explorer
 
+- browse by collection
 - filter by key prefix
-- browse keys with value preview, size, and updated time
+- browse paged keys with value preview, size, kind, and updated time
 - view full value details
 - view per-record metadata
+- create/edit records with collection and raw/json kind
 - create records
 - edit records
 - delete records with confirmation
@@ -253,10 +271,13 @@ END
 
 ### Maintenance
 
+- show database health recommendations
 - show live/storage statistics
 - create snapshot
 - validate database files
+- repair into a fresh destination
 - compact database
+- export one collection or the full database
 - create backup archive
 - open data folder
 
@@ -336,7 +357,7 @@ The native desktop executable was also rebuilt successfully with:
 .\scripts\build-desktop.ps1
 ```
 
-## Implemented V2 Features
+## Implemented V3.2 Features
 
 - single-process lock file protection
 - snapshot create/load path
@@ -347,8 +368,15 @@ The native desktop executable was also rebuilt successfully with:
 - validation command
 - richer stats
 - backup archive generation
+- first-class collections
+- collection-aware console commands
+- JSON validation and value-kind metadata
+- paged explorer browsing
 - record metadata in the explorer
 - maintenance actions for snapshot and validation
+- NDJSON export
+- salvage repair into a fresh destination DB
+- maintenance health/recommendation heuristics
 
 ## Current Limitations
 
@@ -363,12 +391,14 @@ The native desktop executable was also rebuilt successfully with:
 - no background snapshot scheduler
 - no secondary indexes
 - no query planner or schema system
+- no automatic collection-level indexing beyond in-memory collection filtering
+- no interactive merge resolution during repair
+- no scheduled background maintenance worker yet
 
-## Roadmap After V2
+## Roadmap After V3.2
 
-- page-based explorer navigation for very large keyspaces
 - configurable automatic snapshot/compaction policies
 - stronger lock stale-state recovery
 - richer validation / repair tooling
 - optional collection namespaces
-- document-oriented helpers on top of the KV engine
+- deeper document-oriented helpers and field indexing

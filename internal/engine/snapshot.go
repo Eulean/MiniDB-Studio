@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -50,13 +51,15 @@ func (db *DB) writeSnapshotLocked() error {
 		}
 
 		item := snapshotEntry{
-			Kind:      payloadKindSnapshotItem,
-			Sequence:  entry.LastSequence,
-			Key:       key,
-			Value:     value,
-			ValueSize: entry.ValueSize,
-			CreatedAt: entry.CreatedAt,
-			UpdatedAt: entry.UpdatedAt,
+			Kind:       payloadKindSnapshotItem,
+			Sequence:   entry.LastSequence,
+			Collection: entry.Collection,
+			Key:        entry.Key,
+			Value:      value,
+			ValueKind:  entry.ValueKind,
+			ValueSize:  entry.ValueSize,
+			CreatedAt:  entry.CreatedAt,
+			UpdatedAt:  entry.UpdatedAt,
 		}
 
 		if _, err := appendJSONFrame(tempFile, item); err != nil {
@@ -134,8 +137,17 @@ func (db *DB) loadSnapshotLocked() (uint64, error) {
 			return 0, fmt.Errorf("invalid snapshot entry kind %q", item.Kind)
 		}
 
-		index[item.Key] = indexEntry{
-			Key:          item.Key,
+		collection := normalizeCollection(item.Collection)
+		entryKey := item.Key
+		if item.Collection == "" && strings.Contains(item.Key, "/") {
+			collection, entryKey = splitCanonicalKey(item.Key)
+		}
+
+		index[canonicalKey(collection, entryKey)] = indexEntry{
+			CanonicalKey: canonicalKey(collection, entryKey),
+			Collection:   collection,
+			Key:          entryKey,
+			ValueKind:    normalizeValueKind(item.ValueKind),
 			SourceType:   sourceTypeSnapshot,
 			SourcePath:   db.snapshotPath,
 			FrameOffset:  frame.Offset,

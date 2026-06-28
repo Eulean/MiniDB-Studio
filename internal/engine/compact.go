@@ -55,13 +55,15 @@ func (db *DB) Compact() error {
 			Kind:        payloadKindMutation,
 			CommittedAt: time.Now().UTC(),
 			Operations: []persistedOperation{{
-				Sequence:  item.entry.LastSequence,
-				Command:   commandSet,
-				Key:       item.key,
-				Value:     item.value,
-				ValueSize: item.entry.ValueSize,
-				CreatedAt: item.entry.CreatedAt,
-				UpdatedAt: item.entry.UpdatedAt,
+				Sequence:   item.entry.LastSequence,
+				Command:    commandSet,
+				Collection: item.entry.Collection,
+				Key:        item.entry.Key,
+				Value:      item.value,
+				ValueKind:  item.entry.ValueKind,
+				ValueSize:  item.entry.ValueSize,
+				CreatedAt:  item.entry.CreatedAt,
+				UpdatedAt:  item.entry.UpdatedAt,
 			}},
 		}
 
@@ -72,7 +74,10 @@ func (db *DB) Compact() error {
 		}
 
 		replacementIndex[item.key] = indexEntry{
-			Key:          item.key,
+			CanonicalKey: item.entry.CanonicalKey,
+			Collection:   item.entry.Collection,
+			Key:          item.entry.Key,
+			ValueKind:    item.entry.ValueKind,
 			SourceType:   sourceTypeSegment,
 			SourcePath:   segmentPathFinal,
 			FrameOffset:  offset,

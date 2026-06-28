@@ -14,13 +14,25 @@ import (
 func showRecordEditorDialog(
 	window fyne.Window,
 	title string,
+	initialCollection string,
 	initialKey string,
+	initialValueKind string,
 	initialValue string,
-	onSave func(key, value string) error,
+	onSave func(collection, key, valueKind, value string) error,
 ) {
+	collectionEntry := widget.NewEntry()
+	collectionEntry.SetPlaceHolder("collection")
+	collectionEntry.SetText(initialCollection)
+
 	keyEntry := widget.NewEntry()
 	keyEntry.SetPlaceHolder("record key")
 	keyEntry.SetText(initialKey)
+
+	valueKindSelect := widget.NewSelect([]string{"raw", "json"}, nil)
+	if initialValueKind == "" {
+		initialValueKind = "raw"
+	}
+	valueKindSelect.SetSelected(initialValueKind)
 
 	valueEntry := widget.NewMultiLineEntry()
 	valueEntry.SetPlaceHolder("record value")
@@ -30,8 +42,14 @@ func showRecordEditorDialog(
 
 	form := container.NewBorder(
 		container.NewVBox(
+			widget.NewLabel("Collection"),
+			collectionEntry,
+			widget.NewSeparator(),
 			widget.NewLabel("Key"),
 			keyEntry,
+			widget.NewSeparator(),
+			widget.NewLabel("Value Kind"),
+			valueKindSelect,
 			widget.NewSeparator(),
 			widget.NewLabel("Value"),
 		),
@@ -46,13 +64,19 @@ func showRecordEditorDialog(
 			return
 		}
 
+		collection := strings.TrimSpace(collectionEntry.Text)
 		key := strings.TrimSpace(keyEntry.Text)
+		valueKind := strings.TrimSpace(valueKindSelect.Selected)
+		if collection == "" {
+			dialog.ShowError(fmt.Errorf("collection must not be empty"), window)
+			return
+		}
 		if key == "" {
 			dialog.ShowError(fmt.Errorf("key must not be empty"), window)
 			return
 		}
 
-		if err := onSave(key, valueEntry.Text); err != nil {
+		if err := onSave(collection, key, valueKind, valueEntry.Text); err != nil {
 			dialog.ShowError(err, window)
 			return
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // recoverState loads the latest snapshot first, then replays segment records newer than the snapshot cutoff.
@@ -74,8 +75,17 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 
 			switch operation.Command {
 			case commandSet:
-				db.index[operation.Key] = indexEntry{
-					Key:          operation.Key,
+				collection := normalizeCollection(operation.Collection)
+				key := operation.Key
+				if operation.Collection == "" && strings.Contains(operation.Key, "/") {
+					collection, key = splitCanonicalKey(operation.Key)
+				}
+
+				db.index[canonicalKey(collection, key)] = indexEntry{
+					CanonicalKey: canonicalKey(collection, key),
+					Collection:   collection,
+					Key:          key,
+					ValueKind:    normalizeValueKind(operation.ValueKind),
 					SourceType:   sourceTypeSegment,
 					SourcePath:   path,
 					FrameOffset:  frame.Offset,
@@ -89,7 +99,12 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 					db.metadata.TotalSetOperations++
 				}
 			case commandDelete:
-				delete(db.index, operation.Key)
+				collection := normalizeCollection(operation.Collection)
+				key := operation.Key
+				if operation.Collection == "" && strings.Contains(operation.Key, "/") {
+					collection, key = splitCanonicalKey(operation.Key)
+				}
+				delete(db.index, canonicalKey(collection, key))
 				if reconstructCounters {
 					db.metadata.TotalDeleteOps++
 				}
