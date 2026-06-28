@@ -78,6 +78,7 @@ func (db *DB) Compact() error {
 			Collection:   item.entry.Collection,
 			Key:          item.entry.Key,
 			ValueKind:    item.entry.ValueKind,
+			JSONFields:   item.entry.JSONFields,
 			SourceType:   sourceTypeSegment,
 			SourcePath:   segmentPathFinal,
 			FrameOffset:  offset,
@@ -122,6 +123,7 @@ func (db *DB) Compact() error {
 	_ = os.Remove(db.snapshotPath)
 	db.metadata.LastSnapshotSeq = 0
 	db.index = replacementIndex
+	db.rebuildDerivedIndexesLocked()
 	db.activeSegmentID = newSegmentID
 	db.metadata.ActiveSegmentID = newSegmentID
 	db.metadata.NextSegmentID = newSegmentID + 1

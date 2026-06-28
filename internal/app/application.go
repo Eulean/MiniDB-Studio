@@ -64,6 +64,20 @@ func (a *Application) ListRecords(collection, prefix string, page, pageSize int)
 	return a.db.RecordsInCollection(collection, prefix, offset, pageSize), total
 }
 
+// ListRecordsByJSONField returns paged records matching one JSON field equality filter.
+func (a *Application) ListRecordsByJSONField(collection, prefix, field, value string, page, pageSize int) ([]engine.Record, int) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+
+	offset := page * pageSize
+	total := a.db.CountRecordsByJSONFieldInCollection(collection, prefix, field, value)
+	return a.db.RecordsByJSONFieldInCollection(collection, prefix, field, value, offset, pageSize), total
+}
+
 // GetRecord returns one record value for details or editing.
 func (a *Application) GetRecord(collection, key string) (string, bool) {
 	return a.db.GetFromCollection(collection, key)

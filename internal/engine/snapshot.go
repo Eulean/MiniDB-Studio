@@ -143,11 +143,20 @@ func (db *DB) loadSnapshotLocked() (uint64, error) {
 			collection, entryKey = splitCanonicalKey(item.Key)
 		}
 
+		jsonFields := map[string]string(nil)
+		if normalizeValueKind(item.ValueKind) == ValueKindJSON {
+			jsonFields, err = extractIndexedJSONFields(item.Value)
+			if err != nil {
+				return 0, fmt.Errorf("index snapshot json fields for %s/%s: %w", collection, entryKey, err)
+			}
+		}
+
 		index[canonicalKey(collection, entryKey)] = indexEntry{
 			CanonicalKey: canonicalKey(collection, entryKey),
 			Collection:   collection,
 			Key:          entryKey,
 			ValueKind:    normalizeValueKind(item.ValueKind),
+			JSONFields:   jsonFields,
 			SourceType:   sourceTypeSnapshot,
 			SourcePath:   db.snapshotPath,
 			FrameOffset:  frame.Offset,
@@ -160,6 +169,7 @@ func (db *DB) loadSnapshotLocked() (uint64, error) {
 	}
 
 	db.index = index
+	db.rebuildDerivedIndexesLocked()
 	db.metadata.LastSnapshotSeq = header.LastSequence
 	if db.metadata.LastSnapshotTime.IsZero() {
 		db.metadata.LastSnapshotTime = header.CreatedAt

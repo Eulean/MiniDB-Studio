@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v3.2:
+This repository now targets MiniDB v3.4:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -17,6 +17,10 @@ This repository now targets MiniDB v3.2:
 - export tooling
 - repair/salvage tooling
 - maintenance recommendations
+- sorted per-collection key indexing
+- prefix-accelerated paging
+- top-level JSON field indexing
+- equality-based JSON document queries
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database.
@@ -60,6 +64,7 @@ MiniDB Studio Desktop App
 |   +-- stats
 |   +-- command execution
 |   +-- collections / document-aware records
+|   +-- sorted collection indexes
 |
 +-- internal/storage
 |   +-- app-data path resolution
@@ -89,10 +94,15 @@ minidb-studio/
       commands.go
       compact.go
       db.go
+      export.go
+      indexes.go
+      json_index.go
       lock.go
       log.go
+      maintenance.go
       metadata_codec.go
       recovery.go
+      repair.go
       segments.go
       snapshot.go
       stats.go
@@ -182,6 +192,8 @@ For `SET`, `DELETE`, and `BATCH`:
 - The in-memory index stores metadata and file offsets, not full values by default.
 - `GET` loads the value lazily from the referenced snapshot or segment frame.
 - Explorer previews also load values lazily.
+- Collection browsing uses sorted in-memory key slices so prefix filters and paging avoid full map scans.
+- JSON documents also maintain top-level scalar field indexes for simple equality queries.
 
 ### Recovery Path
 
@@ -191,7 +203,7 @@ On startup:
 2. Load metadata.
 3. Load the latest valid snapshot if present.
 4. Replay only segment operations newer than the snapshot sequence.
-5. Rebuild the offset-based index.
+5. Rebuild the offset-based index and the sorted per-collection key slices.
 
 If the final frame is incomplete because of an interrupted write, MiniDB ignores only that final incomplete frame.
 
@@ -229,6 +241,7 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `DELETEIN collection key`
 - `KEYSIN collection [prefix]`
 - `SETJSON collection key json-value`
+- `FINDIN collection field=value`
 - `STATS`
 - `COMPACT`
 - `SNAPSHOT`
@@ -255,6 +268,7 @@ END
 - browse by collection
 - filter by key prefix
 - browse paged keys with value preview, size, kind, and updated time
+- filter JSON collections by one indexed field and value
 - view full value details
 - view per-record metadata
 - create/edit records with collection and raw/json kind
@@ -357,7 +371,26 @@ The native desktop executable was also rebuilt successfully with:
 .\scripts\build-desktop.ps1
 ```
 
-## Implemented V3.2 Features
+## Desktop Startup Smoke Test
+
+Use this short checklist before calling a desktop build "ready":
+
+1. Close every existing `MiniDBStudio.exe` instance.
+2. Run `.\scripts\build-desktop.ps1`.
+3. Launch `.\dist\MiniDBStudio.exe`.
+4. Confirm the window stays open for at least 10 seconds.
+5. Confirm the Explorer loads without a crash.
+6. Create one raw record and one JSON record.
+7. Run `FINDIN docs email=...` from the console if a JSON record was added.
+8. Open Maintenance and confirm stats render.
+9. Close the app and relaunch it.
+10. Confirm the records persist after reopen.
+
+MiniDB Studio now also tries to recover common local-startup issues automatically:
+- old `MDB1` local data is migrated into the current storage format
+- stale `minidb.lock` files are cleaned up when the owning PID is no longer alive
+
+## Implemented V3.4 Features
 
 - single-process lock file protection
 - snapshot create/load path
@@ -377,6 +410,11 @@ The native desktop executable was also rebuilt successfully with:
 - NDJSON export
 - salvage repair into a fresh destination DB
 - maintenance health/recommendation heuristics
+- sorted per-collection key index maintenance on writes, deletes, snapshot loads, recovery, and compaction
+- faster prefix browsing through binary-search key windows
+- top-level JSON field indexing for string, number, boolean, and null values
+- `FINDIN collection field=value` console queries
+- explorer-side JSON field filters powered by the same engine query path
 
 ## Current Limitations
 
@@ -391,14 +429,17 @@ The native desktop executable was also rebuilt successfully with:
 - no background snapshot scheduler
 - no secondary indexes
 - no query planner or schema system
-- no automatic collection-level indexing beyond in-memory collection filtering
+- no nested JSON path indexing yet
+- no range, contains, or multi-condition JSON queries yet
+- no field-level or secondary indexes beyond top-level equality indexes and per-collection sorted key slices
 - no interactive merge resolution during repair
 - no scheduled background maintenance worker yet
 
-## Roadmap After V3.2
+## Roadmap After V3.4
 
 - configurable automatic snapshot/compaction policies
 - stronger lock stale-state recovery
 - richer validation / repair tooling
 - optional collection namespaces
-- deeper document-oriented helpers and field indexing
+- deeper document-oriented helpers and nested field indexing
+- import tooling and richer non-SQL query workflows

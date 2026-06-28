@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v3.2 in progress
+- MiniDB Studio v3.4 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -57,6 +57,31 @@
 - Explicitly not yet in this slice:
   - automatic background workers
   - field-level document indexing
+  - remote/cloud features
+
+## V3.3 Scope
+- Stronger in-memory indexing for collection-aware browsing
+- Sorted per-collection key slices for predictable ordering
+- Prefix-accelerated paging so explorer scans do not walk the whole live map
+- Recovery, compaction, and snapshot rebuild paths that keep the derived indexes correct
+- Tests and docs for sorted/paged browsing behavior
+- Explicitly not yet in this slice:
+  - secondary indexes on JSON fields
+  - background auto-maintenance workers
+  - remote/cloud features
+
+## V3.4 Scope
+- Top-level JSON field indexing for document-style records
+- Simple equality queries without adding SQL
+- `FINDIN collection field=value` console support
+- Explorer field filters powered by the same engine query path
+- Recovery, snapshot, compaction, and overwrite/delete behavior that keeps JSON indexes correct
+- Tests and docs for JSON field query behavior
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - nested-path querying
+  - range queries
+  - background indexing workers
   - remote/cloud features
 
 ## Proposed File Changes
@@ -137,7 +162,14 @@
   - export
   - repair salvage
   - maintenance recommendations
+- startup hardening updates:
+  - legacy `MDB1` local-data migration into current `MDB2` frames
+  - stale lock file recovery using PID liveness checks
+  - desktop startup error window instead of silent fatal exit
+  - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v3.2 is now in a usable checkpoint state.
-- Future work can focus on background maintenance workers, richer repair/export flows, and stronger indexing.
+- MiniDB Studio v3.4 is focused on turning JSON records into queryable local documents.
+- After that lands, future work can focus on nested-field indexes, richer import/query workflows, and background maintenance workers.
+- Immediate hardening task:
+  - stale lock recovery for `minidb.lock` so crash leftovers do not block desktop startup

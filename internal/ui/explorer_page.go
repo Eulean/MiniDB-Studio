@@ -23,6 +23,8 @@ type ExplorerPage struct {
 	root             fyne.CanvasObject
 	collectionSelect *widget.Select
 	filterEntry      *widget.Entry
+	fieldEntry       *widget.Entry
+	fieldValueEntry  *widget.Entry
 	pageLabel        *widget.Label
 	table            *widget.Table
 	detailKey        *widget.Label
@@ -48,11 +50,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		pageSize:        100,
 	}
 
-	page.collectionSelect = widget.NewSelect([]string{engine.DefaultCollection}, func(string) {
-		page.currentPage = 0
-		page.Refresh()
-	})
-	page.collectionSelect.SetSelected(engine.DefaultCollection)
+	page.collectionSelect = widget.NewSelect([]string{engine.DefaultCollection}, nil)
 
 	page.filterEntry = widget.NewEntry()
 	page.filterEntry.SetPlaceHolder("Filter by key prefix")
@@ -60,7 +58,23 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		page.currentPage = 0
 		page.Refresh()
 	}
+	page.fieldEntry = widget.NewEntry()
+	page.fieldEntry.SetPlaceHolder("JSON field")
+	page.fieldEntry.OnChanged = func(string) {
+		page.currentPage = 0
+		page.Refresh()
+	}
+	page.fieldValueEntry = widget.NewEntry()
+	page.fieldValueEntry.SetPlaceHolder("JSON field value")
+	page.fieldValueEntry.OnChanged = func(string) {
+		page.currentPage = 0
+		page.Refresh()
+	}
 	page.pageLabel = widget.NewLabel("")
+	page.collectionSelect.OnChanged = func(string) {
+		page.currentPage = 0
+		page.Refresh()
+	}
 
 	refreshButton := widget.NewButton("Refresh", func() {
 		page.Refresh()
@@ -163,6 +177,8 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		widget.NewLabel("Collection"),
 		page.collectionSelect,
 		page.filterEntry,
+		page.fieldEntry,
+		page.fieldValueEntry,
 		page.pageLabel,
 		layout.NewSpacer(),
 		widget.NewButton("Previous", func() {
@@ -217,7 +233,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	split.Offset = 0.68
 
 	page.root = container.NewBorder(nil, nil, nil, nil, split)
-	page.Refresh()
+	page.collectionSelect.SetSelected(engine.DefaultCollection)
 	return page
 }
 
@@ -234,7 +250,15 @@ func (p *ExplorerPage) Refresh() {
 		p.collectionSelect.SetSelected(selectedOrDefault(firstOrDefault(collections)))
 	}
 
-	p.records, p.totalRecords = p.application.ListRecords(selectedOrDefault(p.collectionSelect.Selected), strings.TrimSpace(p.filterEntry.Text), p.currentPage, p.pageSize)
+	collection := selectedOrDefault(p.collectionSelect.Selected)
+	prefix := strings.TrimSpace(p.filterEntry.Text)
+	field := strings.TrimSpace(p.fieldEntry.Text)
+	fieldValue := p.fieldValueEntry.Text
+	if field != "" && fieldValue != "" {
+		p.records, p.totalRecords = p.application.ListRecordsByJSONField(collection, prefix, field, fieldValue, p.currentPage, p.pageSize)
+	} else {
+		p.records, p.totalRecords = p.application.ListRecords(collection, prefix, p.currentPage, p.pageSize)
+	}
 
 	if p.selectedRow >= len(p.records) {
 		p.selectedRow = -1

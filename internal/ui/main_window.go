@@ -153,19 +153,38 @@ func buildAboutPage() fyne.CanvasObject {
 
 MiniDB Studio is a native desktop app built with Go and Fyne around a custom append-only key-value engine.
 
+## Current Capabilities
+- local single-process durable storage
+- collections and paged browsing
+- JSON-aware records
+- equality-based JSON document lookup
+- validation, export, repair, backup, and compaction
+- legacy local-data migration and stale-lock recovery
+
 ## Supported Commands
 - SET key value
 - GET key
 - DELETE key
 - KEYS [optional-prefix]
+- SETIN collection key value
+- GETIN collection key
+- DELETEIN collection key
+- KEYSIN collection [prefix]
+- SETJSON collection key json-value
+- FINDIN collection field=value
 - STATS
 - COMPACT
+- SNAPSHOT
+- VALIDATE
+- EXPORT collection
+- REPAIR
 
-## MiniDB v1 Scope
-- Local single-process storage
-- Durable append-only log
-- Startup replay and recovery
-- Manual compaction and backup
+## Desktop Smoke Test
+1. Launch the app and let the Explorer load.
+2. Create a record from Data Explorer.
+3. Run a console command such as STATS or FINDIN.
+4. Open Maintenance and verify stats appear.
+5. Close and relaunch to confirm persistence.
 
 ## Not Included Yet
 - SQL

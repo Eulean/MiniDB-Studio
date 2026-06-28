@@ -28,13 +28,17 @@ func (db *DB) ExportCollection(collection, destinationPath string) (ExportReport
 
 	targetCollection := normalizeExportCollection(collection)
 	keys := make([]string, 0, len(db.index))
-	for canonical, entry := range db.index {
-		if targetCollection != "all" && entry.Collection != targetCollection {
-			continue
+	if targetCollection == "all" {
+		for canonical := range db.index {
+			keys = append(keys, canonical)
 		}
-		keys = append(keys, canonical)
+		sort.Strings(keys)
+	} else {
+		collectionKeys := db.collectionKeys[targetCollection]
+		for _, key := range collectionKeys {
+			keys = append(keys, canonicalKey(targetCollection, key))
+		}
 	}
-	sort.Strings(keys)
 
 	file, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {

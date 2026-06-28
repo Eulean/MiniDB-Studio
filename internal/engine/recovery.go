@@ -10,6 +10,8 @@ import (
 // recoverState loads the latest snapshot first, then replays segment records newer than the snapshot cutoff.
 func (db *DB) recoverState() error {
 	db.index = make(map[string]indexEntry)
+	db.collectionKeys = make(map[string][]string)
+	db.jsonFieldIndex = make(map[string]map[string]map[string][]string)
 	reconstructCounters := db.metadata.TotalSetOperations == 0 &&
 		db.metadata.TotalDeleteOps == 0 &&
 		db.metadata.NextSequence == 1
@@ -81,11 +83,20 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 					collection, key = splitCanonicalKey(operation.Key)
 				}
 
-				db.index[canonicalKey(collection, key)] = indexEntry{
+				jsonFields := map[string]string(nil)
+				if normalizeValueKind(operation.ValueKind) == ValueKindJSON {
+					jsonFields, err = extractIndexedJSONFields(operation.Value)
+					if err != nil {
+						return 0, fmt.Errorf("replay json field indexing for %s/%s: %w", collection, key, err)
+					}
+				}
+
+				db.upsertIndexEntryLocked(indexEntry{
 					CanonicalKey: canonicalKey(collection, key),
 					Collection:   collection,
 					Key:          key,
 					ValueKind:    normalizeValueKind(operation.ValueKind),
+					JSONFields:   jsonFields,
 					SourceType:   sourceTypeSegment,
 					SourcePath:   path,
 					FrameOffset:  frame.Offset,
@@ -94,7 +105,7 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 					CreatedAt:    operation.CreatedAt,
 					UpdatedAt:    operation.UpdatedAt,
 					LastSequence: operation.Sequence,
-				}
+				})
 				if reconstructCounters {
 					db.metadata.TotalSetOperations++
 				}
@@ -104,7 +115,7 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 				if operation.Collection == "" && strings.Contains(operation.Key, "/") {
 					collection, key = splitCanonicalKey(operation.Key)
 				}
-				delete(db.index, canonicalKey(collection, key))
+				db.deleteIndexEntryLocked(collection, key)
 				if reconstructCounters {
 					db.metadata.TotalDeleteOps++
 				}

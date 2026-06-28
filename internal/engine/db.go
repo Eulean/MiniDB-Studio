@@ -41,6 +41,8 @@ type DB struct {
 	activeSegmentID uint64
 	activeSegment   *os.File
 	index           map[string]indexEntry
+	collectionKeys  map[string][]string
+	jsonFieldIndex  map[string]map[string]map[string][]string
 	metadata        metadata
 }
 
@@ -71,12 +73,14 @@ func OpenInDirWithOptions(dataDir string, options OpenOptions) (*DB, error) {
 	}
 
 	db := &DB{
-		dataDir:      dataDir,
-		metadataPath: filepath.Join(dataDir, "minidb.meta.json"),
-		snapshotPath: filepath.Join(dataDir, "snapshot.dat"),
-		lock:         lock,
-		options:      options.withDefaults(),
-		index:        make(map[string]indexEntry),
+		dataDir:        dataDir,
+		metadataPath:   filepath.Join(dataDir, "minidb.meta.json"),
+		snapshotPath:   filepath.Join(dataDir, "snapshot.dat"),
+		lock:           lock,
+		options:        options.withDefaults(),
+		index:          make(map[string]indexEntry),
+		collectionKeys: make(map[string][]string),
+		jsonFieldIndex: make(map[string]map[string]map[string][]string),
 	}
 
 	if err := db.migrateLegacyV1Files(); err != nil {
@@ -193,40 +197,6 @@ func addFileToZip(archive *zip.Writer, sourcePath, archiveName string) error {
 
 	if _, err := io.Copy(writer, sourceFile); err != nil {
 		return fmt.Errorf("copy %q into archive: %w", sourcePath, err)
-	}
-
-	return nil
-}
-
-// migrateLegacyV1Files preserves existing user data by promoting the old single-log layout into segment 1.
-func (db *DB) migrateLegacyV1Files() error {
-	legacyLogPath := filepath.Join(db.dataDir, "minidb.log")
-	if _, err := os.Stat(legacyLogPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return fmt.Errorf("stat legacy v1 log: %w", err)
-	}
-
-	segmentPaths, err := db.segmentPaths()
-	if err != nil {
-		return err
-	}
-	if len(segmentPaths) > 0 {
-		return nil
-	}
-
-	targetPath := segmentPath(db.dataDir, 1)
-	if err := os.Rename(legacyLogPath, targetPath); err != nil {
-		return fmt.Errorf("migrate legacy v1 log to segment 1: %w", err)
-	}
-
-	if db.metadata.NextSegmentID < 2 {
-		db.metadata.NextSegmentID = 2
-	}
-	if db.metadata.ActiveSegmentID == 0 {
-		db.metadata.ActiveSegmentID = 1
 	}
 
 	return nil

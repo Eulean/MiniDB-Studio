@@ -1,13 +1,17 @@
 package tests
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"minidb-studio/internal/engine"
 )
@@ -34,6 +38,40 @@ func openTestDBWithOptions(t *testing.T, options engine.OpenOptions) (*engine.DB
 	}
 
 	return db, dir
+}
+
+func writeLegacyFrameFile(t *testing.T, path string, records []map[string]any) {
+	t.Helper()
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create legacy frame file: %v", err)
+	}
+	defer file.Close()
+
+	for _, record := range records {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("marshal legacy record: %v", err)
+		}
+
+		header := make([]byte, 8)
+		copy(header[:4], []byte("MDB1"))
+		binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+
+		checksum := make([]byte, 4)
+		binary.BigEndian.PutUint32(checksum, crc32.ChecksumIEEE(payload))
+
+		if _, err := file.Write(header); err != nil {
+			t.Fatalf("write legacy header: %v", err)
+		}
+		if _, err := file.Write(payload); err != nil {
+			t.Fatalf("write legacy payload: %v", err)
+		}
+		if _, err := file.Write(checksum); err != nil {
+			t.Fatalf("write legacy checksum: %v", err)
+		}
+	}
 }
 
 func TestSetGetDelete(t *testing.T) {
@@ -90,6 +128,42 @@ func TestPersistenceAfterCloseAndReopen(t *testing.T) {
 	}
 }
 
+func TestLegacyMDB1SegmentMigratesOnOpen(t *testing.T) {
+	dir := t.TempDir()
+	legacySegment := filepath.Join(dir, "segment-000001.log")
+	writeLegacyFrameFile(t, legacySegment, []map[string]any{
+		{
+			"command":   "SET",
+			"key":       "legacy:user",
+			"value":     "Ada",
+			"timestamp": time.Date(2026, 6, 28, 3, 37, 48, 0, time.UTC),
+		},
+	})
+
+	if err := os.WriteFile(filepath.Join(dir, "minidb.meta.json"), []byte(`{"snapshot_record_count":0}`), 0o644); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+
+	db, err := engine.OpenInDir(dir)
+	if err != nil {
+		t.Fatalf("open migrated legacy db: %v", err)
+	}
+	defer db.Close()
+
+	value, ok := db.Get("legacy:user")
+	if !ok || value != "Ada" {
+		t.Fatalf("unexpected migrated value: value=%q ok=%v", value, ok)
+	}
+
+	backups, err := filepath.Glob(filepath.Join(dir, "legacy-backup-*"))
+	if err != nil {
+		t.Fatalf("glob legacy backup dir: %v", err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected one legacy backup directory, got %v", backups)
+	}
+}
+
 func TestFileLocking(t *testing.T) {
 	db, dir := openTestDB(t)
 	defer db.Close()
@@ -100,6 +174,29 @@ func TestFileLocking(t *testing.T) {
 	}
 	if !errors.Is(err, engine.ErrDatabaseLocked) {
 		t.Fatalf("expected ErrDatabaseLocked, got %v", err)
+	}
+}
+
+func TestStaleLockFileIsRecovered(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "minidb.lock")
+	if err := os.WriteFile(lockPath, []byte("999999"), 0o644); err != nil {
+		t.Fatalf("write stale lock file: %v", err)
+	}
+
+	original := engine.SetProcessExistsForLockForTests(func(pid int) (bool, error) {
+		return false, nil
+	})
+	defer engine.RestoreProcessExistsForLockForTests(original)
+
+	db, err := engine.OpenInDir(dir)
+	if err != nil {
+		t.Fatalf("open db with stale lock: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("expected recreated lock file, got stat error: %v", err)
 	}
 }
 
@@ -282,6 +379,81 @@ func TestPagedCollectionListing(t *testing.T) {
 	}
 }
 
+func TestCollectionKeysStaySortedAcrossMutations(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	for _, key := range []string{"user:20", "user:03", "user:11", "user:01"} {
+		if err := db.SetInCollection("users", key, "value"); err != nil {
+			t.Fatalf("set %q: %v", key, err)
+		}
+	}
+
+	if err := db.DeleteFromCollection("users", "user:11"); err != nil {
+		t.Fatalf("delete user:11: %v", err)
+	}
+	if err := db.SetInCollection("users", "user:05", "value"); err != nil {
+		t.Fatalf("set user:05: %v", err)
+	}
+
+	got := db.KeysInCollection("users", "")
+	want := []string{"user:01", "user:03", "user:05", "user:20"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected sorted keys: got=%v want=%v", got, want)
+	}
+}
+
+func TestCollectionPrefixPagingUsesSortedSlice(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	for _, key := range []string{"acct:001", "acct:002", "acct:010", "other:001", "acct:020"} {
+		if err := db.SetInCollection("users", key, "value"); err != nil {
+			t.Fatalf("set %q: %v", key, err)
+		}
+	}
+
+	records := db.RecordsInCollection("users", "acct:", 1, 2)
+	if len(records) != 2 {
+		t.Fatalf("expected two paged records, got %d", len(records))
+	}
+	if records[0].Key != "acct:002" || records[1].Key != "acct:010" {
+		t.Fatalf("unexpected paged prefix keys: %#v", records)
+	}
+	if db.CountRecordsInCollection("users", "acct:") != 4 {
+		t.Fatalf("unexpected prefix count")
+	}
+}
+
+func TestRecoveryRebuildsCollectionIndexes(t *testing.T) {
+	db, dir := openTestDB(t)
+
+	for _, key := range []string{"acct:100", "acct:002", "acct:010"} {
+		if err := db.SetInCollection("users", key, "value"); err != nil {
+			t.Fatalf("set %q: %v", key, err)
+		}
+	}
+	if err := db.DeleteFromCollection("users", "acct:010"); err != nil {
+		t.Fatalf("delete acct:010: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := engine.OpenInDir(dir)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer reopened.Close()
+
+	got := reopened.KeysInCollection("users", "acct:")
+	want := []string{"acct:002", "acct:100"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected recovered keys: got=%v want=%v", got, want)
+	}
+}
+
 func TestJSONValidationAndMetadata(t *testing.T) {
 	db, _ := openTestDB(t)
 	defer db.Close()
@@ -300,6 +472,90 @@ func TestJSONValidationAndMetadata(t *testing.T) {
 	}
 	if metadata.ValueKind != engine.ValueKindJSON {
 		t.Fatalf("expected json kind, got %q", metadata.ValueKind)
+	}
+}
+
+func TestFindKeysByJSONField(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"name":"Ada","email":"ada@example.com","active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"name":"Grace","email":"grace@example.com","active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"name":"Linus","active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	matches := db.FindKeysByJSONFieldInCollection("docs", "", "active", "true")
+	want := []string{"profile:1", "profile:2"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected json matches: got=%v want=%v", matches, want)
+	}
+
+	paged := db.RecordsByJSONFieldInCollection("docs", "profile:", "active", "true", 1, 1)
+	if len(paged) != 1 || paged[0].Key != "profile:2" {
+		t.Fatalf("unexpected paged json query result: %#v", paged)
+	}
+}
+
+func TestJSONFieldIndexUpdatesAcrossOverwriteDeleteAndReopen(t *testing.T) {
+	db, dir := openTestDB(t)
+
+	if err := db.SetTypedInCollection("docs", "profile", `{"email":"ada@example.com","active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set initial json record: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile", `{"email":"grace@example.com","active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("overwrite json record: %v", err)
+	}
+
+	if matches := db.FindKeysByJSONFieldInCollection("docs", "", "email", "ada@example.com"); len(matches) != 0 {
+		t.Fatalf("expected overwritten email index to be removed, got %v", matches)
+	}
+	if matches := db.FindKeysByJSONFieldInCollection("docs", "", "email", "grace@example.com"); len(matches) != 1 {
+		t.Fatalf("expected replacement email index, got %v", matches)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := engine.OpenInDir(dir)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+
+	if matches := reopened.FindKeysByJSONFieldInCollection("docs", "", "active", "false"); len(matches) != 1 || matches[0] != "profile" {
+		t.Fatalf("unexpected reopened json query matches: %v", matches)
+	}
+
+	if err := reopened.DeleteFromCollection("docs", "profile"); err != nil {
+		t.Fatalf("delete reopened profile: %v", err)
+	}
+	if matches := reopened.FindKeysByJSONFieldInCollection("docs", "", "active", "false"); len(matches) != 0 {
+		t.Fatalf("expected delete to clear json index, got %v", matches)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("close reopened db: %v", err)
+	}
+}
+
+func TestFindInCommand(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile", `{"email":"ada@example.com","name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile: %v", err)
+	}
+
+	result, err := db.Execute("FINDIN docs email=ada@example.com")
+	if err != nil {
+		t.Fatalf("execute FINDIN: %v", err)
+	}
+	if !strings.Contains(result, "1 matches") || !strings.Contains(result, "profile") {
+		t.Fatalf("unexpected FINDIN result: %q", result)
 	}
 }
 
