@@ -1,0 +1,209 @@
+package app
+
+import (
+	"fmt"
+	"os/exec"
+	"runtime"
+	"strings"
+	"time"
+
+	"minidb-studio/internal/engine"
+)
+
+// Application coordinates the database engine and the desktop UI state.
+type Application struct {
+	db    *engine.DB
+	state *State
+}
+
+// NewApplication opens MiniDB and prepares the shared application state.
+func NewApplication() (*Application, error) {
+	db, err := engine.Open()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Application{
+		db:    db,
+		state: NewState(db.DataDir()),
+	}, nil
+}
+
+// Close releases database resources when the desktop window exits.
+func (a *Application) Close() error {
+	return a.db.Close()
+}
+
+// State exposes the shared UI state to window components.
+func (a *Application) State() *State {
+	return a.state
+}
+
+// DataDir exposes the active storage path for the status bar and maintenance page.
+func (a *Application) DataDir() string {
+	return a.db.DataDir()
+}
+
+// ListRecords returns live records for the explorer page.
+func (a *Application) ListRecords(prefix string) []engine.Record {
+	return a.db.Records(prefix)
+}
+
+// GetRecord returns one record value for details or editing.
+func (a *Application) GetRecord(key string) (string, bool) {
+	return a.db.Get(key)
+}
+
+// SaveRecord creates or updates a key-value pair and updates status text.
+func (a *Application) SaveRecord(key, value string) error {
+	a.state.SetCurrentStatus("Saving record...")
+
+	if err := a.db.Set(key, value); err != nil {
+		a.state.SetCurrentStatus("Save failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Saved record %q", key))
+	return nil
+}
+
+// RenameRecord handles a key rename by creating the new key and removing the old one.
+func (a *Application) RenameRecord(oldKey, newKey, value string) error {
+	a.state.SetCurrentStatus("Renaming record...")
+
+	if oldKey == newKey {
+		return a.SaveRecord(newKey, value)
+	}
+
+	if err := a.db.Set(newKey, value); err != nil {
+		a.state.SetCurrentStatus("Rename failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	if err := a.db.Delete(oldKey); err != nil {
+		a.state.SetCurrentStatus("Rename failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Renamed record %q to %q", oldKey, newKey))
+	return nil
+}
+
+// DeleteRecord removes a key from the database and updates status text.
+func (a *Application) DeleteRecord(key string) error {
+	a.state.SetCurrentStatus("Deleting record...")
+
+	if err := a.db.Delete(key); err != nil {
+		a.state.SetCurrentStatus("Delete failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Deleted record %q", key))
+	return nil
+}
+
+// ExecuteCommand runs one MiniDB v1 console command and stores history output.
+func (a *Application) ExecuteCommand(input string) (string, error) {
+	a.state.SetCurrentStatus("Running command...")
+
+	result, err := a.db.Execute(input)
+	historyEntry := formatHistoryEntry(input, result, err)
+	a.state.AppendHistory(historyEntry)
+
+	if err != nil {
+		a.state.SetCurrentStatus("Command failed")
+		a.state.SetLastResult(err.Error())
+		return "", err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult("Command completed")
+	return result, nil
+}
+
+// CommandHistory returns the console history text for the output panel.
+func (a *Application) CommandHistory() string {
+	return a.state.Snapshot().CommandHistory
+}
+
+// Stats returns database statistics for the maintenance page.
+func (a *Application) Stats() (engine.Stats, error) {
+	return a.db.Stats()
+}
+
+// Compact runs durable log compaction and updates status text.
+func (a *Application) Compact() error {
+	a.state.SetCurrentStatus("Compacting database...")
+
+	if err := a.db.Compact(); err != nil {
+		a.state.SetCurrentStatus("Compaction failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult("Database compaction completed")
+	return nil
+}
+
+// BackupToPath writes a copy of the current durable log to the selected path.
+func (a *Application) BackupToPath(path string) error {
+	a.state.SetCurrentStatus("Creating backup...")
+
+	if err := a.db.BackupTo(path); err != nil {
+		a.state.SetCurrentStatus("Backup failed")
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Backup created at %q", path))
+	return nil
+}
+
+// OpenDataFolder launches the operating system file manager at the data folder.
+func (a *Application) OpenDataFolder() error {
+	a.state.SetCurrentStatus("Opening data folder...")
+
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		command = exec.Command("explorer", a.db.DataDir())
+	case "darwin":
+		command = exec.Command("open", a.db.DataDir())
+	default:
+		command = exec.Command("xdg-open", a.db.DataDir())
+	}
+
+	if err := command.Start(); err != nil {
+		a.state.SetCurrentStatus("Open folder failed")
+		a.state.SetLastResult(err.Error())
+		return fmt.Errorf("open data folder: %w", err)
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult("Opened data folder")
+	return nil
+}
+
+func formatHistoryEntry(input, result string, err error) string {
+	lines := []string{
+		"[" + time.Now().Format("2006-01-02 15:04:05") + "]",
+		"> " + strings.TrimSpace(input),
+	}
+
+	if err != nil {
+		lines = append(lines, "ERROR: "+err.Error())
+	} else {
+		lines = append(lines, result)
+	}
+
+	return strings.Join(lines, "\n")
+}
