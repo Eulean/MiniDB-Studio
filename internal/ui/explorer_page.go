@@ -23,8 +23,7 @@ type ExplorerPage struct {
 	root             fyne.CanvasObject
 	collectionSelect *widget.Select
 	filterEntry      *widget.Entry
-	fieldEntry       *widget.Entry
-	fieldValueEntry  *widget.Entry
+	queryEntry       *widget.Entry
 	pageLabel        *widget.Label
 	table            *widget.Table
 	detailKey        *widget.Label
@@ -58,15 +57,9 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		page.currentPage = 0
 		page.Refresh()
 	}
-	page.fieldEntry = widget.NewEntry()
-	page.fieldEntry.SetPlaceHolder("JSON field")
-	page.fieldEntry.OnChanged = func(string) {
-		page.currentPage = 0
-		page.Refresh()
-	}
-	page.fieldValueEntry = widget.NewEntry()
-	page.fieldValueEntry.SetPlaceHolder("JSON field value")
-	page.fieldValueEntry.OnChanged = func(string) {
+	page.queryEntry = widget.NewEntry()
+	page.queryEntry.SetPlaceHolder("JSON query: profile.email=ada@example.com active=true")
+	page.queryEntry.OnChanged = func(string) {
 		page.currentPage = 0
 		page.Refresh()
 	}
@@ -177,8 +170,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		widget.NewLabel("Collection"),
 		page.collectionSelect,
 		page.filterEntry,
-		page.fieldEntry,
-		page.fieldValueEntry,
+		page.queryEntry,
 		page.pageLabel,
 		layout.NewSpacer(),
 		widget.NewButton("Previous", func() {
@@ -252,10 +244,19 @@ func (p *ExplorerPage) Refresh() {
 
 	collection := selectedOrDefault(p.collectionSelect.Selected)
 	prefix := strings.TrimSpace(p.filterEntry.Text)
-	field := strings.TrimSpace(p.fieldEntry.Text)
-	fieldValue := p.fieldValueEntry.Text
-	if field != "" && fieldValue != "" {
-		p.records, p.totalRecords = p.application.ListRecordsByJSONField(collection, prefix, field, fieldValue, p.currentPage, p.pageSize)
+	queryText := strings.TrimSpace(p.queryEntry.Text)
+	if queryText != "" {
+		records, total, err := p.application.ListRecordsByJSONQuery(collection, prefix, queryText, p.currentPage, p.pageSize)
+		if err != nil {
+			p.records = []engine.Record{}
+			p.totalRecords = 0
+			p.pageLabel.SetText("Invalid JSON query: " + err.Error())
+			p.table.Refresh()
+			p.refreshDetails()
+			return
+		}
+		p.records = records
+		p.totalRecords = total
 	} else {
 		p.records, p.totalRecords = p.application.ListRecords(collection, prefix, p.currentPage, p.pageSize)
 	}

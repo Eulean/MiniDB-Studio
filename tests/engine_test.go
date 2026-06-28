@@ -501,6 +501,78 @@ func TestFindKeysByJSONField(t *testing.T) {
 	}
 }
 
+func TestFindKeysByNestedJSONPathAndMultipleConditions(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"email":"ada@example.com","role":"admin"},"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"email":"ada@example.com","role":"viewer"},"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"email":"grace@example.com","role":"admin"},"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	matches := db.FindKeysByJSONConditionsInCollection("docs", "", []engine.JSONQueryCondition{
+		{Path: "profile.email", Value: "ada@example.com"},
+		{Path: "active", Value: "true"},
+	})
+	want := []string{"profile:1", "profile:2"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected nested-path matches: got=%v want=%v", matches, want)
+	}
+
+	adminMatches := db.FindKeysByJSONConditionsInCollection("docs", "", []engine.JSONQueryCondition{
+		{Path: "profile.email", Value: "ada@example.com"},
+		{Path: "profile.role", Value: "admin"},
+		{Path: "active", Value: "true"},
+	})
+	if len(adminMatches) != 1 || adminMatches[0] != "profile:1" {
+		t.Fatalf("unexpected multi-condition intersection: %v", adminMatches)
+	}
+}
+
+func TestJSONQueryOperatorsForContainsNumericAndArrayMembership(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"bio":"Ada builds local databases","score":95},"tags":["admin","builder"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"bio":"Grace reviews systems","score":82},"tags":["reviewer"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"bio":"Linus maintains kernels","score":76},"tags":["admin"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	containsMatches := db.FindKeysByJSONConditionsInCollection("docs", "", []engine.JSONQueryCondition{
+		{Path: "profile.bio", Operator: "~=", Value: "local"},
+	})
+	if len(containsMatches) != 1 || containsMatches[0] != "profile:1" {
+		t.Fatalf("unexpected contains matches: %v", containsMatches)
+	}
+
+	numericMatches := db.FindKeysByJSONConditionsInCollection("docs", "", []engine.JSONQueryCondition{
+		{Path: "profile.score", Operator: ">=", Value: "80"},
+		{Path: "active", Operator: "=", Value: "true"},
+	})
+	wantNumeric := []string{"profile:1", "profile:2"}
+	if strings.Join(numericMatches, ",") != strings.Join(wantNumeric, ",") {
+		t.Fatalf("unexpected numeric matches: got=%v want=%v", numericMatches, wantNumeric)
+	}
+
+	arrayMatches := db.FindKeysByJSONConditionsInCollection("docs", "", []engine.JSONQueryCondition{
+		{Path: "tags", Operator: "=", Value: "admin"},
+		{Path: "active", Operator: "=", Value: "true"},
+	})
+	if len(arrayMatches) != 1 || arrayMatches[0] != "profile:1" {
+		t.Fatalf("unexpected array membership matches: %v", arrayMatches)
+	}
+}
+
 func TestJSONFieldIndexUpdatesAcrossOverwriteDeleteAndReopen(t *testing.T) {
 	db, dir := openTestDB(t)
 
@@ -546,16 +618,33 @@ func TestFindInCommand(t *testing.T) {
 	db, _ := openTestDB(t)
 	defer db.Close()
 
-	if err := db.SetTypedInCollection("docs", "profile", `{"email":"ada@example.com","name":"Ada"}`, engine.ValueKindJSON); err != nil {
+	if err := db.SetTypedInCollection("docs", "profile", `{"profile":{"email":"ada@example.com"},"name":"Ada","active":true}`, engine.ValueKindJSON); err != nil {
 		t.Fatalf("set docs/profile: %v", err)
 	}
 
-	result, err := db.Execute("FINDIN docs email=ada@example.com")
+	result, err := db.Execute("FINDIN docs profile.email=ada@example.com active=true")
 	if err != nil {
 		t.Fatalf("execute FINDIN: %v", err)
 	}
 	if !strings.Contains(result, "1 matches") || !strings.Contains(result, "profile") {
 		t.Fatalf("unexpected FINDIN result: %q", result)
+	}
+}
+
+func TestFindInCommandWithOperators(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile", `{"profile":{"bio":"Ada builds local databases","score":95},"tags":["admin","builder"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile: %v", err)
+	}
+
+	result, err := db.Execute("FINDIN docs profile.score>=90 profile.bio~=local tags=admin")
+	if err != nil {
+		t.Fatalf("execute operator FINDIN: %v", err)
+	}
+	if !strings.Contains(result, "1 matches") || !strings.Contains(result, "profile") {
+		t.Fatalf("unexpected operator FINDIN result: %q", result)
 	}
 }
 

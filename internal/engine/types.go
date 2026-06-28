@@ -67,6 +67,13 @@ type BatchOperation struct {
 	ValueKind  string
 }
 
+// JSONQueryCondition describes one equality predicate against an indexed JSON path.
+type JSONQueryCondition struct {
+	Path     string
+	Operator string
+	Value    string
+}
+
 // Stats describes the current durable and in-memory database state.
 type Stats struct {
 	LiveKeyCount       int
@@ -119,19 +126,19 @@ type MaintenanceReport struct {
 
 // indexEntry is the in-memory pointer to the latest durable value for a key.
 type indexEntry struct {
-	CanonicalKey string            `json:"canonical_key"`
-	Collection   string            `json:"collection"`
-	Key          string            `json:"key"`
-	ValueKind    string            `json:"value_kind"`
-	JSONFields   map[string]string `json:"json_fields,omitempty"`
-	SourceType   string            `json:"source_type"`
-	SourcePath   string            `json:"source_path"`
-	FrameOffset  int64             `json:"frame_offset"`
-	OperationIdx int               `json:"operation_index"`
-	ValueSize    int               `json:"value_size"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	LastSequence uint64            `json:"last_sequence"`
+	CanonicalKey string              `json:"canonical_key"`
+	Collection   string              `json:"collection"`
+	Key          string              `json:"key"`
+	ValueKind    string              `json:"value_kind"`
+	JSONFields   map[string][]string `json:"json_fields,omitempty"`
+	SourceType   string              `json:"source_type"`
+	SourcePath   string              `json:"source_path"`
+	FrameOffset  int64               `json:"frame_offset"`
+	OperationIdx int                 `json:"operation_index"`
+	ValueSize    int                 `json:"value_size"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
+	LastSequence uint64              `json:"last_sequence"`
 }
 
 // mutationBatch is the durable write unit stored in segment files.

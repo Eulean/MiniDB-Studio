@@ -83,7 +83,7 @@ func (db *DB) replaySegment(path string, snapshotSequence uint64, reconstructCou
 					collection, key = splitCanonicalKey(operation.Key)
 				}
 
-				jsonFields := map[string]string(nil)
+				jsonFields := map[string][]string(nil)
 				if normalizeValueKind(operation.ValueKind) == ValueKindJSON {
 					jsonFields, err = extractIndexedJSONFields(operation.Value)
 					if err != nil {

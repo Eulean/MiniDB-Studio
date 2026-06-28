@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v3.4 in progress
+- MiniDB Studio v3.5 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -81,6 +81,34 @@
   - SQL parsing
   - nested-path querying
   - range queries
+  - background indexing workers
+  - remote/cloud features
+
+## V3.5 Scope
+- Nested JSON path indexing using dot-path field names
+- Multi-condition JSON equality queries with sorted-key intersection
+- `FINDIN collection path=value path=value` console support
+- Explorer-side JSON query expressions using the same engine parser
+- Recovery, snapshot, and compaction behavior that preserves nested query indexes
+- Tests for nested-field lookup, multi-condition matching, and command parsing
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - range queries
+  - array membership indexing
+  - background indexing workers
+  - remote/cloud features
+
+## V3.6 Scope
+- Richer JSON query operators without adding SQL
+- String contains queries using `~=`
+- Numeric comparisons using `>`, `>=`, `<`, `<=`
+- Array membership matching through the existing equality syntax
+- Explorer query expressions and console commands that share the same operator parser
+- Tests for contains, numeric, and array-membership document queries
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - regex queries
+  - OR groups or parentheses
   - background indexing workers
   - remote/cloud features
 
@@ -169,7 +197,5 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v3.4 is focused on turning JSON records into queryable local documents.
-- After that lands, future work can focus on nested-field indexes, richer import/query workflows, and background maintenance workers.
-- Immediate hardening task:
-  - stale lock recovery for `minidb.lock` so crash leftovers do not block desktop startup
+- MiniDB Studio v3.6 is focused on richer non-SQL JSON query operators.
+- After that lands, future work can focus on OR groups, import/query workflows, and background maintenance workers.

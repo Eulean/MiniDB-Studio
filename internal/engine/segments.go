@@ -146,7 +146,7 @@ func (db *DB) appendMutationBatch(operations []persistedOperation) ([]indexEntry
 		}
 
 		collection := normalizeCollection(operation.Collection)
-		jsonFields := map[string]string(nil)
+		jsonFields := map[string][]string(nil)
 		if normalizeValueKind(operation.ValueKind) == ValueKindJSON {
 			jsonFields, err = extractIndexedJSONFields(operation.Value)
 			if err != nil {

@@ -253,10 +253,19 @@ func (db *DB) CountRecordsInCollection(collection, prefix string) int {
 
 // CountRecordsByJSONFieldInCollection returns the number of live records matching one indexed JSON field.
 func (db *DB) CountRecordsByJSONFieldInCollection(collection, prefix, field, value string) int {
+	return db.CountRecordsByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
+		Path:     strings.TrimSpace(field),
+		Operator: "=",
+		Value:    value,
+	}})
+}
+
+// CountRecordsByJSONConditionsInCollection returns the number of live records matching every JSON predicate.
+func (db *DB) CountRecordsByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition) int {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return len(db.findKeysByJSONFieldLocked(normalizeCollection(collection), strings.TrimSpace(prefix), strings.TrimSpace(field), value))
+	return len(db.findKeysByJSONConditionsLocked(normalizeCollection(collection), strings.TrimSpace(prefix), conditions))
 }
 
 // Records returns explorer rows with lazy value preview loading and optional pagination.
@@ -318,9 +327,18 @@ func (db *DB) RecordsInCollection(collection, prefix string, offset int, limit i
 
 // RecordsByJSONFieldInCollection returns paged records filtered by one indexed JSON field.
 func (db *DB) RecordsByJSONFieldInCollection(collection, prefix, field, value string, offset int, limit int) []Record {
+	return db.RecordsByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
+		Path:     strings.TrimSpace(field),
+		Operator: "=",
+		Value:    value,
+	}}, offset, limit)
+}
+
+// RecordsByJSONConditionsInCollection returns paged records filtered by every JSON predicate.
+func (db *DB) RecordsByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition, offset int, limit int) []Record {
 	db.mu.RLock()
 	collection = normalizeCollection(collection)
-	matchedKeys := db.findKeysByJSONFieldLocked(collection, strings.TrimSpace(prefix), strings.TrimSpace(field), value)
+	matchedKeys := db.findKeysByJSONConditionsLocked(collection, strings.TrimSpace(prefix), conditions)
 
 	if offset < 0 {
 		offset = 0
@@ -369,14 +387,23 @@ func (db *DB) RecordsByJSONFieldInCollection(collection, prefix, field, value st
 
 // FindKeysByJSONFieldInCollection returns sorted live keys for one JSON equality query.
 func (db *DB) FindKeysByJSONFieldInCollection(collection, prefix, field, value string) []string {
+	return db.FindKeysByJSONConditionsInCollection(collection, prefix, []JSONQueryCondition{{
+		Path:     strings.TrimSpace(field),
+		Operator: "=",
+		Value:    value,
+	}})
+}
+
+// FindKeysByJSONConditionsInCollection returns sorted live keys for every JSON equality query.
+func (db *DB) FindKeysByJSONConditionsInCollection(collection, prefix string, conditions []JSONQueryCondition) []string {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return append([]string(nil), db.findKeysByJSONFieldLocked(normalizeCollection(collection), strings.TrimSpace(prefix), strings.TrimSpace(field), value)...)
+	return append([]string(nil), db.findKeysByJSONConditionsLocked(normalizeCollection(collection), strings.TrimSpace(prefix), conditions)...)
 }
 
-func (db *DB) findKeysByJSONFieldLocked(collection, prefix, field, value string) []string {
-	if field == "" {
+func (db *DB) findKeysByJSONConditionsLocked(collection, prefix string, conditions []JSONQueryCondition) []string {
+	if len(conditions) == 0 {
 		return []string{}
 	}
 
@@ -385,19 +412,105 @@ func (db *DB) findKeysByJSONFieldLocked(collection, prefix, field, value string)
 		return []string{}
 	}
 
-	keys := collectionIndex[field][value]
-	if prefix == "" {
-		return keys
+	var matchedKeys []string
+	hasIndexedEqualitySeed := false
+	for conditionIndex, condition := range conditions {
+		path := strings.TrimSpace(condition.Path)
+		if path == "" {
+			return []string{}
+		}
+
+		if condition.Operator == "" || condition.Operator == "=" {
+			keys := collectionIndex[path][condition.Value]
+			if len(keys) == 0 {
+				return []string{}
+			}
+
+			if !hasIndexedEqualitySeed {
+				matchedKeys = append([]string(nil), keys...)
+				hasIndexedEqualitySeed = true
+				continue
+			}
+
+			matchedKeys = intersectSortedKeys(matchedKeys, keys)
+			if len(matchedKeys) == 0 {
+				return []string{}
+			}
+		}
+		_ = conditionIndex
 	}
 
-	filtered := make([]string, 0, len(keys))
-	for _, key := range keys {
+	if !hasIndexedEqualitySeed {
+		keys, start, end := db.collectionKeysRangeLocked(collection, prefix)
+		matchedKeys = append([]string(nil), keys[start:end]...)
+	}
+
+	filteredByConditions := make([]string, 0, len(matchedKeys))
+	for _, key := range matchedKeys {
+		entry, exists := db.index[canonicalKey(collection, key)]
+		if !exists {
+			continue
+		}
+
+		if recordMatchesJSONConditions(entry, conditions) {
+			filteredByConditions = append(filteredByConditions, key)
+		}
+	}
+
+	if prefix == "" {
+		return filteredByConditions
+	}
+
+	filtered := make([]string, 0, len(filteredByConditions))
+	for _, key := range filteredByConditions {
 		if strings.HasPrefix(key, prefix) {
 			filtered = append(filtered, key)
 		}
 	}
 
 	return filtered
+}
+
+func recordMatchesJSONConditions(entry indexEntry, conditions []JSONQueryCondition) bool {
+	for _, condition := range conditions {
+		values := entry.JSONFields[strings.TrimSpace(condition.Path)]
+		if len(values) == 0 {
+			return false
+		}
+		if !evaluateJSONCondition(values, condition) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func intersectSortedKeys(left, right []string) []string {
+	intersection := make([]string, 0, minInt(len(left), len(right)))
+	leftIndex := 0
+	rightIndex := 0
+
+	for leftIndex < len(left) && rightIndex < len(right) {
+		switch {
+		case left[leftIndex] == right[rightIndex]:
+			intersection = append(intersection, left[leftIndex])
+			leftIndex++
+			rightIndex++
+		case left[leftIndex] < right[rightIndex]:
+			leftIndex++
+		default:
+			rightIndex++
+		}
+	}
+
+	return intersection
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func validateKey(key string) error {
@@ -538,11 +651,11 @@ func (db *DB) Execute(input string) (string, error) {
 		}
 		return strings.Join(db.KeysInCollection(collection, prefix), "\n"), nil
 	case strings.HasPrefix(upper, "FINDIN "):
-		collection, field, value, err := parseFindInCommand(commandText)
+		collection, conditions, err := parseFindInCommand(commandText)
 		if err != nil {
 			return "", err
 		}
-		matches := db.RecordsByJSONFieldInCollection(collection, "", field, value, 0, 100)
+		matches := db.RecordsByJSONConditionsInCollection(collection, "", conditions, 0, 100)
 		if len(matches) == 0 {
 			return "0 matches", nil
 		}
@@ -689,34 +802,28 @@ func parseCollectionPrefixCommand(commandText string, verb string) (string, stri
 	return collection, prefix, nil
 }
 
-func parseFindInCommand(commandText string) (string, string, string, error) {
+func parseFindInCommand(commandText string) (string, []JSONQueryCondition, error) {
 	rest := strings.TrimSpace(commandText[len("FINDIN"):])
 	firstSpace := strings.IndexAny(rest, " \t")
 	if firstSpace == -1 {
-		return "", "", "", fmt.Errorf("FINDIN requires collection and field=value")
+		return "", nil, fmt.Errorf("FINDIN requires collection and at least one path=value condition")
 	}
 
 	collection := strings.TrimSpace(rest[:firstSpace])
-	expression := strings.TrimSpace(rest[firstSpace+1:])
+	queryText := strings.TrimSpace(rest[firstSpace+1:])
 	if err := validateCollection(collection); err != nil {
-		return "", "", "", err
+		return "", nil, err
 	}
 
-	equalsIndex := strings.Index(expression, "=")
-	if equalsIndex == -1 {
-		return "", "", "", fmt.Errorf("FINDIN requires field=value")
+	conditions, err := ParseJSONQueryConditions(queryText)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(conditions) == 0 {
+		return "", nil, fmt.Errorf("FINDIN requires at least one path=value condition")
 	}
 
-	field := strings.TrimSpace(expression[:equalsIndex])
-	value := expression[equalsIndex+1:]
-	if field == "" {
-		return "", "", "", fmt.Errorf("FINDIN field must not be empty")
-	}
-	if value == "" {
-		return "", "", "", fmt.Errorf("FINDIN value must not be empty")
-	}
-
-	return collection, field, value, nil
+	return collection, conditions, nil
 }
 
 func parseBatchCommand(commandText string) ([]BatchOperation, error) {

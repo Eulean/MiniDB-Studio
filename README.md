@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v3.4:
+This repository now targets MiniDB v3.6:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -19,8 +19,10 @@ This repository now targets MiniDB v3.4:
 - maintenance recommendations
 - sorted per-collection key indexing
 - prefix-accelerated paging
-- top-level JSON field indexing
-- equality-based JSON document queries
+- nested JSON path indexing
+- multi-condition JSON document queries
+- string contains and numeric comparison operators
+- array membership queries for scalar arrays
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database.
@@ -193,7 +195,7 @@ For `SET`, `DELETE`, and `BATCH`:
 - `GET` loads the value lazily from the referenced snapshot or segment frame.
 - Explorer previews also load values lazily.
 - Collection browsing uses sorted in-memory key slices so prefix filters and paging avoid full map scans.
-- JSON documents also maintain top-level scalar field indexes for simple equality queries.
+- JSON documents also maintain scalar field indexes, including nested dot paths such as `profile.email`.
 
 ### Recovery Path
 
@@ -241,7 +243,8 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `DELETEIN collection key`
 - `KEYSIN collection [prefix]`
 - `SETJSON collection key json-value`
-- `FINDIN collection field=value`
+- `FINDIN collection path=value [path=value ...]`
+- `FINDIN collection path>=value [path~=value ...]`
 - `STATS`
 - `COMPACT`
 - `SNAPSHOT`
@@ -268,7 +271,7 @@ END
 - browse by collection
 - filter by key prefix
 - browse paged keys with value preview, size, kind, and updated time
-- filter JSON collections by one indexed field and value
+- filter JSON collections with nested-path, multi-condition, and operator-based query expressions
 - view full value details
 - view per-record metadata
 - create/edit records with collection and raw/json kind
@@ -390,7 +393,7 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - old `MDB1` local data is migrated into the current storage format
 - stale `minidb.lock` files are cleaned up when the owning PID is no longer alive
 
-## Implemented V3.4 Features
+## Implemented V3.6 Features
 
 - single-process lock file protection
 - snapshot create/load path
@@ -412,9 +415,13 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - maintenance health/recommendation heuristics
 - sorted per-collection key index maintenance on writes, deletes, snapshot loads, recovery, and compaction
 - faster prefix browsing through binary-search key windows
-- top-level JSON field indexing for string, number, boolean, and null values
-- `FINDIN collection field=value` console queries
-- explorer-side JSON field filters powered by the same engine query path
+- nested JSON path indexing for string, number, boolean, and null values
+- multi-condition JSON equality matching through sorted-key intersection
+- `FINDIN collection path=value [path=value ...]` console queries
+- explorer-side JSON query expressions powered by the same engine query path
+- string contains queries through `~=`
+- numeric comparisons through `>`, `>=`, `<`, and `<=`
+- scalar array membership queries through the existing equality syntax
 
 ## Current Limitations
 
@@ -429,17 +436,17 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - no background snapshot scheduler
 - no secondary indexes
 - no query planner or schema system
-- no nested JSON path indexing yet
-- no range, contains, or multi-condition JSON queries yet
-- no field-level or secondary indexes beyond top-level equality indexes and per-collection sorted key slices
+- no regex JSON queries yet
+- no OR groups, parentheses, or compound boolean logic yet
+- no field-level or secondary indexes beyond equality indexes and per-collection sorted key slices
 - no interactive merge resolution during repair
 - no scheduled background maintenance worker yet
 
-## Roadmap After V3.4
+## Roadmap After V3.6
 
 - configurable automatic snapshot/compaction policies
 - stronger lock stale-state recovery
 - richer validation / repair tooling
 - optional collection namespaces
-- deeper document-oriented helpers and nested field indexing
+- deeper document-oriented helpers and boolean query composition
 - import tooling and richer non-SQL query workflows

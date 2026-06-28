@@ -143,7 +143,7 @@ func (db *DB) loadSnapshotLocked() (uint64, error) {
 			collection, entryKey = splitCanonicalKey(item.Key)
 		}
 
-		jsonFields := map[string]string(nil)
+		jsonFields := map[string][]string(nil)
 		if normalizeValueKind(item.ValueKind) == ValueKindJSON {
 			jsonFields, err = extractIndexedJSONFields(item.Value)
 			if err != nil {
