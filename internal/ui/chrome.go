@@ -1,36 +1,70 @@
 package ui
 
 import (
+	"image/color"
 	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
 
+var (
+	chromePanelFill     = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+	chromePanelBorder   = color.NRGBA{R: 211, G: 220, B: 232, A: 255}
+	chromeMutedText     = color.NRGBA{R: 93, G: 108, B: 124, A: 255}
+	chromeHeroFill      = color.NRGBA{R: 20, G: 31, B: 48, A: 255}
+	chromeHeroBorder    = color.NRGBA{R: 46, G: 87, B: 141, A: 255}
+	chromeHeroText      = color.NRGBA{R: 244, G: 248, B: 252, A: 255}
+	chromeSidebarFill   = color.NRGBA{R: 241, G: 246, B: 252, A: 255}
+	chromeSidebarBorder = color.NRGBA{R: 211, G: 220, B: 232, A: 255}
+	chromeAppBackground = color.NRGBA{R: 233, G: 239, B: 246, A: 255}
+)
+
 // sectionCard wraps related controls in one consistent visual container.
 func sectionCard(title, subtitle string, content fyne.CanvasObject) fyne.CanvasObject {
-	header := container.NewVBox(
-		widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-	)
+	headerObjects := []fyne.CanvasObject{
+		newTextLine(title, chromeMutedText, true),
+	}
 	if strings.TrimSpace(subtitle) != "" {
-		header.Add(widget.NewLabel(subtitle))
+		headerObjects = append(headerObjects, newTextLine(subtitle, chromeMutedText, false))
 	}
 
-	return widget.NewCard("", "", container.NewPadded(container.NewBorder(header, nil, nil, nil, content)))
+	body := container.NewBorder(
+		container.NewVBox(headerObjects...),
+		nil,
+		nil,
+		nil,
+		content,
+	)
+	return panelSurface(body, chromePanelFill, chromePanelBorder)
 }
 
-// statusCard renders one compact status value so the footer stays readable while resizing.
-func statusCard(title string, value *widget.Label, icon fyne.Resource) fyne.CanvasObject {
-	value.Wrapping = fyne.TextWrapWord
-	return widget.NewCard("", "", container.NewHBox(
-		widget.NewIcon(icon),
+// heroBanner renders a stronger application header with better product identity.
+func heroBanner(title, subtitle string, trailing fyne.CanvasObject) fyne.CanvasObject {
+	left := container.NewVBox(
+		newTextLine(title, chromeHeroText, true),
+		newTextLine(subtitle, chromeHeroText, false),
+	)
+	body := container.NewHBox(left, layout.NewSpacer(), trailing)
+	return panelSurface(body, chromeHeroFill, chromeHeroBorder)
+}
+
+// sidebarPanel renders the navigation shell with slightly stronger separation.
+func sidebarPanel(title, subtitle string, content fyne.CanvasObject) fyne.CanvasObject {
+	body := container.NewBorder(
 		container.NewVBox(
-			widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-			value,
+			newTextLine(title, chromeMutedText, true),
+			newTextLine(subtitle, chromeMutedText, false),
 		),
-	))
+		nil,
+		nil,
+		nil,
+		content,
+	)
+	return panelSurface(body, chromeSidebarFill, chromeSidebarBorder)
 }
 
 // sidebarNavButton keeps navigation buttons visually aligned and easy to scan.
@@ -61,13 +95,27 @@ func standardScroll(content fyne.CanvasObject) fyne.CanvasObject {
 	return scroll
 }
 
-// actionButtonRow groups page actions in a responsive-looking row.
-func actionButtonRow(objects ...fyne.CanvasObject) fyne.CanvasObject {
-	row := append([]fyne.CanvasObject{}, objects...)
-	row = append(row, layoutSpacer())
-	return container.NewHBox(row...)
-}
-
 func layoutSpacer() fyne.CanvasObject {
 	return layout.NewSpacer()
+}
+
+func newTextLine(text string, fill color.Color, bold bool) fyne.CanvasObject {
+	line := canvas.NewText(text, fill)
+	line.TextSize = 14
+	line.TextStyle = fyne.TextStyle{Bold: bold}
+	if bold {
+		line.TextSize = 15
+	}
+	return line
+}
+
+func panelSurface(content fyne.CanvasObject, fill color.Color, stroke color.Color) fyne.CanvasObject {
+	background := canvas.NewRectangle(fill)
+	background.StrokeColor = stroke
+	background.StrokeWidth = 1
+	return container.NewStack(background, container.NewPadded(content))
+}
+
+func canvasBg() fyne.CanvasObject {
+	return canvas.NewRectangle(chromeAppBackground)
 }

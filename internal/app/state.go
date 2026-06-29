@@ -9,9 +9,12 @@ import (
 type Page string
 
 const (
+	PageHome        Page = "Overview"
 	PageExplorer    Page = "Data Explorer"
+	PageQuery       Page = "Query Studio"
 	PageConsole     Page = "Command Console"
 	PageMaintenance Page = "Maintenance"
+	PagePresets     Page = "Preset Library"
 	PageAbout       Page = "About"
 )
 
@@ -38,7 +41,7 @@ type State struct {
 // NewState constructs the shared application state with sensible defaults.
 func NewState(databaseLocation string) *State {
 	return &State{
-		currentPage:      PageExplorer,
+		currentPage:      PageHome,
 		databaseLocation: databaseLocation,
 		currentStatus:    "Ready",
 		lastResult:       "Application started",

@@ -12,7 +12,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -168,7 +167,6 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	)
 
 	pageNavigationRow := container.NewHBox(
-		widget.NewIcon(theme.NavigateBackIcon()),
 		widget.NewButton("Previous", func() {
 			if page.currentPage > 0 {
 				page.currentPage--
@@ -237,7 +235,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	split := container.NewHSplit(leftPanel, rightPanel)
 	split.Offset = 0.7
 
-	page.root = standardScroll(split)
+	page.root = container.NewPadded(split)
 	page.collectionSelect.SetSelected(engine.DefaultCollection)
 	return page
 }

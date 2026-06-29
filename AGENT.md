@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v7.0 in progress
+- MiniDB Studio v9.0 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -281,6 +281,54 @@
 - Keep layouts resizable and readable across the main work pages
 - Prepare the repo for commit and push after the final validation pass
 
+## V7.1 Scope
+- Add a true Overview landing page with workspace health, collection summaries, and recent activity
+- Promote the app from a page set into a fuller desktop studio workflow
+- Persist activity history inside the application data directory
+
+## V7.2 Scope
+- Durable activity history feed for successful and failed user-visible operations
+- Shared activity surface for dashboard and preset-management workflows
+- Keep the activity layer in `internal/app` instead of mixing it into engine internals
+
+## V7.3 Scope
+- Collection profile summaries with record counts, value-kind counts, sample keys, and last-update timestamps
+- Dashboard-ready collection insight without introducing server-style schema analyzers
+- Reuse existing engine metadata instead of expanding the on-disk format
+
+## V7.4 Scope
+- Dedicated Preset Library page for save, load, rename, duplicate, import, export, and delete flows
+- Keep every visible preset action working from a first-class desktop surface
+- Reuse the existing preset store so the engine boundary stays clean
+
+## V8.0 Scope
+- Add a read-only mini SQL layer for `SELECT ... FROM ... WHERE ... LIMIT ...`
+- Translate SQL-shaped reads into the existing collection and JSON-query paths
+- Keep SQL deliberately compact and non-authoritative: no joins, writes, DDL, networking, or server semantics
+
+## V8.1 Scope
+- Extend mini SQL with `ORDER BY ... ASC|DESC`
+- Keep sorting constrained to known result columns instead of arbitrary expressions
+- Reuse one read-only query path for both desktop and console execution
+
+## V8.2 Scope
+- Add `SELECT COUNT(*)` for lightweight query aggregation
+- Keep aggregation intentionally narrow so MiniDB does not pretend to be a full SQL engine
+
+## V8.3 Scope
+- Durable saved-query library stored beside the MiniDB workspace
+- Query names, SQL text, and notes managed through `internal/app`
+- Keep query persistence separate from dataset presets because the workflow is different
+
+## V8.4 Scope
+- First-class Query Studio page in the desktop shell
+- Save, load, rename, delete, run, and export read-only SQL workflows without dropping into maintenance dialogs
+
+## V9.0 Scope
+- Query Studio result export to TSV for offline review and spreadsheet handoff
+- Dashboard summary updated with saved-query counts so the home page reflects operational maturity
+- Remove temporary startup tracing so the desktop build stays release-clean
+
 ## Proposed File Changes
 - Keep:
   - `internal/app`
@@ -366,5 +414,6 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v7.0 completes the current UI modernization pass and prepares the repo for release-style packaging and Git publishing.
-- After that lands, future work can focus on richer visual diff UX, schema suggestions, wildcard/path helpers, and background maintenance workers.
+- MiniDB Studio v9.0 now has the first real query-workbench layer on top of the local engine.
+- After that lands, future work can focus on richer aggregates, schema intelligence, saved result views, wildcard/path helpers, and background maintenance workers.
+- Keep the engine local-first and single-process while growing the operator experience around practical data exploration.

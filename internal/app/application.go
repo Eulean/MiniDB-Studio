@@ -14,9 +14,11 @@ import (
 
 // Application coordinates the database engine and the desktop UI state.
 type Application struct {
-	db          *engine.DB
-	state       *State
-	presetStore *DatasetPresetStore
+	db            *engine.DB
+	state         *State
+	presetStore   *DatasetPresetStore
+	queryStore    *QueryStore
+	activityStore *ActivityStore
 }
 
 // NewApplication opens MiniDB and prepares the shared application state.
@@ -27,9 +29,11 @@ func NewApplication() (*Application, error) {
 	}
 
 	return &Application{
-		db:          db,
-		state:       NewState(db.DataDir()),
-		presetStore: NewDatasetPresetStore(db.DataDir()),
+		db:            db,
+		state:         NewState(db.DataDir()),
+		presetStore:   NewDatasetPresetStore(db.DataDir()),
+		queryStore:    NewQueryStore(db.DataDir()),
+		activityStore: NewActivityStore(db.DataDir()),
 	}, nil
 }
 
@@ -40,9 +44,11 @@ func NewApplicationForTests(db *engine.DB, presetStore *DatasetPresetStore) *App
 	}
 
 	return &Application{
-		db:          db,
-		state:       NewState(db.DataDir()),
-		presetStore: presetStore,
+		db:            db,
+		state:         NewState(db.DataDir()),
+		presetStore:   presetStore,
+		queryStore:    NewQueryStore(db.DataDir()),
+		activityStore: NewActivityStore(db.DataDir()),
 	}
 }
 
@@ -61,6 +67,52 @@ func (a *Application) ListDatasetPresets() ([]DatasetPreset, error) {
 	return a.presetStore.List()
 }
 
+// ListSavedQueries returns the reusable SQL query library for the query studio page.
+func (a *Application) ListSavedQueries() ([]SavedQuery, error) {
+	return a.queryStore.List()
+}
+
+// FindSavedQuery resolves one reusable SQL query by name.
+func (a *Application) FindSavedQuery(name string) (SavedQuery, error) {
+	return a.queryStore.Find(name)
+}
+
+// SaveSavedQuery persists one reusable SQL query.
+func (a *Application) SaveSavedQuery(query SavedQuery) error {
+	if err := a.queryStore.Save(query); err != nil {
+		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Save query", strings.TrimSpace(query.Name), err)
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Saved query %q", strings.TrimSpace(query.Name)))
+	a.recordSuccessActivity("Save query", strings.TrimSpace(query.Name), "Saved read-only SQL query")
+	return nil
+}
+
+// DeleteSavedQuery removes one saved SQL query by name.
+func (a *Application) DeleteSavedQuery(name string) error {
+	if err := a.queryStore.Delete(name); err != nil {
+		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Delete query", strings.TrimSpace(name), err)
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Deleted query %q", strings.TrimSpace(name)))
+	a.recordSuccessActivity("Delete query", strings.TrimSpace(name), "Deleted saved SQL query")
+	return nil
+}
+
+// RenameSavedQuery changes one saved SQL query name.
+func (a *Application) RenameSavedQuery(oldName, newName string) error {
+	if err := a.queryStore.Rename(oldName, newName); err != nil {
+		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Rename query", strings.TrimSpace(oldName), err)
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Renamed query %q to %q", strings.TrimSpace(oldName), strings.TrimSpace(newName)))
+	a.recordSuccessActivity("Rename query", strings.TrimSpace(newName), "Renamed saved SQL query")
+	return nil
+}
+
 // FindDatasetPreset resolves one reusable workflow preset by name.
 func (a *Application) FindDatasetPreset(name string) (DatasetPreset, error) {
 	return a.presetStore.Find(name)
@@ -70,9 +122,11 @@ func (a *Application) FindDatasetPreset(name string) (DatasetPreset, error) {
 func (a *Application) SaveDatasetPreset(preset DatasetPreset) error {
 	if err := a.presetStore.Save(preset); err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Save preset", strings.TrimSpace(preset.Name), err)
 		return err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Saved preset %q", strings.TrimSpace(preset.Name)))
+	a.recordSuccessActivity("Save preset", strings.TrimSpace(preset.Name), "Saved or updated preset configuration")
 	return nil
 }
 
@@ -80,9 +134,11 @@ func (a *Application) SaveDatasetPreset(preset DatasetPreset) error {
 func (a *Application) DeleteDatasetPreset(name string) error {
 	if err := a.presetStore.Delete(name); err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Delete preset", strings.TrimSpace(name), err)
 		return err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Deleted preset %q", strings.TrimSpace(name)))
+	a.recordSuccessActivity("Delete preset", strings.TrimSpace(name), "Deleted saved preset")
 	return nil
 }
 
@@ -90,9 +146,11 @@ func (a *Application) DeleteDatasetPreset(name string) error {
 func (a *Application) RenameDatasetPreset(oldName, newName string) error {
 	if err := a.presetStore.Rename(oldName, newName); err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Rename preset", strings.TrimSpace(oldName), err)
 		return err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Renamed preset %q to %q", strings.TrimSpace(oldName), strings.TrimSpace(newName)))
+	a.recordSuccessActivity("Rename preset", strings.TrimSpace(newName), "Renamed saved preset")
 	return nil
 }
 
@@ -100,9 +158,11 @@ func (a *Application) RenameDatasetPreset(oldName, newName string) error {
 func (a *Application) DuplicateDatasetPreset(sourceName, newName string) error {
 	if err := a.presetStore.Duplicate(sourceName, newName); err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Duplicate preset", strings.TrimSpace(sourceName), err)
 		return err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Duplicated preset %q to %q", strings.TrimSpace(sourceName), strings.TrimSpace(newName)))
+	a.recordSuccessActivity("Duplicate preset", strings.TrimSpace(newName), "Created a copied preset")
 	return nil
 }
 
@@ -111,9 +171,11 @@ func (a *Application) ExportDatasetPresetConfig(name, path string) (DatasetPrese
 	preset, err := a.presetStore.Export(name, path)
 	if err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Export preset config", strings.TrimSpace(name), err)
 		return DatasetPreset{}, err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Exported preset %q to %q", strings.TrimSpace(name), strings.TrimSpace(path)))
+	a.recordSuccessActivity("Export preset config", strings.TrimSpace(name), fmt.Sprintf("Exported preset to %q", strings.TrimSpace(path)))
 	return preset, nil
 }
 
@@ -122,9 +184,11 @@ func (a *Application) ImportDatasetPresetConfig(path string) (DatasetPreset, err
 	preset, err := a.presetStore.Import(path)
 	if err != nil {
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Import preset config", strings.TrimSpace(path), err)
 		return DatasetPreset{}, err
 	}
 	a.state.SetLastResult(fmt.Sprintf("Imported preset %q from %q", preset.Name, strings.TrimSpace(path)))
+	a.recordSuccessActivity("Import preset config", preset.Name, fmt.Sprintf("Imported preset from %q", strings.TrimSpace(path)))
 	return preset, nil
 }
 
@@ -194,11 +258,13 @@ func (a *Application) SaveRecord(collection, key, value, valueKind string) error
 	if err := a.db.SetTypedInCollection(collection, key, value, valueKind); err != nil {
 		a.state.SetCurrentStatus("Save failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Save record", collection+"/"+key, err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Saved record %q/%q", collection, key))
+	a.recordSuccessActivity("Save record", collection+"/"+key, fmt.Sprintf("Stored %s record", valueKind))
 	return nil
 }
 
@@ -216,11 +282,13 @@ func (a *Application) RenameRecord(oldCollection, oldKey, newCollection, newKey,
 	}); err != nil {
 		a.state.SetCurrentStatus("Rename failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Rename record", oldCollection+"/"+oldKey, err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Renamed record %q/%q to %q/%q", oldCollection, oldKey, newCollection, newKey))
+	a.recordSuccessActivity("Rename record", newCollection+"/"+newKey, fmt.Sprintf("Moved record from %s/%s", oldCollection, oldKey))
 	return nil
 }
 
@@ -231,11 +299,13 @@ func (a *Application) DeleteRecord(collection, key string) error {
 	if err := a.db.DeleteFromCollection(collection, key); err != nil {
 		a.state.SetCurrentStatus("Delete failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Delete record", collection+"/"+key, err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Deleted record %q/%q", collection, key))
+	a.recordSuccessActivity("Delete record", collection+"/"+key, "Deleted live record")
 	return nil
 }
 
@@ -250,11 +320,13 @@ func (a *Application) ExecuteCommand(input string) (string, error) {
 	if err != nil {
 		a.state.SetCurrentStatus("Command failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Console command", strings.TrimSpace(input), err)
 		return "", err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Command completed")
+	a.recordSuccessActivity("Console command", strings.TrimSpace(input), "Command completed successfully")
 	return result, nil
 }
 
@@ -263,6 +335,8 @@ func (a *Application) executePresetAwareCommand(input string) (string, error) {
 	upper := strings.ToUpper(commandText)
 
 	switch {
+	case strings.HasPrefix(upper, "SELECT "):
+		return a.ExecuteMiniSQL(commandText)
 	case upper == "LISTPRESETS":
 		presets, err := a.ListDatasetPresets()
 		if err != nil {
@@ -402,11 +476,13 @@ func (a *Application) Snapshot() error {
 	if err := a.db.Snapshot(); err != nil {
 		a.state.SetCurrentStatus("Snapshot failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Create snapshot", "database", err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Snapshot created")
+	a.recordSuccessActivity("Create snapshot", "database", "Created durable snapshot")
 	return nil
 }
 
@@ -418,11 +494,13 @@ func (a *Application) Validate() (engine.ValidationReport, error) {
 	if err != nil {
 		a.state.SetCurrentStatus("Validation failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Validate database", "database", err)
 		return engine.ValidationReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Validation completed")
+	a.recordSuccessActivity("Validate database", "database", fmt.Sprintf("Validated %d segment(s)", report.SegmentCount))
 	return report, nil
 }
 
@@ -438,11 +516,13 @@ func (a *Application) Compact() error {
 	if err := a.db.Compact(); err != nil {
 		a.state.SetCurrentStatus("Compaction failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Compact database", "database", err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Database compaction completed")
+	a.recordSuccessActivity("Compact database", "database", "Compaction completed")
 	return nil
 }
 
@@ -453,11 +533,13 @@ func (a *Application) BackupToPath(path string) error {
 	if err := a.db.BackupTo(path); err != nil {
 		a.state.SetCurrentStatus("Backup failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Create backup", strings.TrimSpace(path), err)
 		return err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Backup created at %q", path))
+	a.recordSuccessActivity("Create backup", strings.TrimSpace(path), "Created durable backup archive")
 	return nil
 }
 
@@ -469,11 +551,13 @@ func (a *Application) ExportCollection(collection, path string) (engine.ExportRe
 	if err != nil {
 		a.state.SetCurrentStatus("Export failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Export collection", normalizeActivityTarget(collection, path), err)
 		return engine.ExportReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Export created at %q", path))
+	a.recordSuccessActivity("Export collection", normalizeActivityTarget(collection, path), fmt.Sprintf("Exported %d record(s)", report.ExportedRecords))
 	return report, nil
 }
 
@@ -485,11 +569,13 @@ func (a *Application) ExportJSONQueryCollection(collection, queryText, path stri
 	if err != nil {
 		a.state.SetCurrentStatus("Filtered export failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Export filtered collection", normalizeActivityTarget(collection, path), err)
 		return engine.ExportReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Filtered export created at %q", path))
+	a.recordSuccessActivity("Export filtered collection", normalizeActivityTarget(collection, path), fmt.Sprintf("Exported %d filtered record(s)", report.ExportedRecords))
 	return report, nil
 }
 
@@ -501,11 +587,13 @@ func (a *Application) PreviewNDJSONImport(collection, path, keyField, conflictMo
 	if err != nil {
 		a.state.SetCurrentStatus("Preview failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Preview import", normalizeActivityTarget(collection, path), err)
 		return engine.ImportPreviewReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Previewed %d NDJSON lines from %q", report.TotalLines, path))
+	a.recordSuccessActivity("Preview import", normalizeActivityTarget(collection, path), fmt.Sprintf("Previewed %d line(s)", report.TotalLines))
 	return report, nil
 }
 
@@ -517,14 +605,17 @@ func (a *Application) ImportNDJSON(collection, path, keyField, conflictMode stri
 	if err != nil {
 		a.state.SetCurrentStatus("Import failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Import NDJSON", normalizeActivityTarget(collection, path), err)
 		return engine.ImportReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	if dryRun {
 		a.state.SetLastResult(fmt.Sprintf("Dry-run import checked %d records from %q", report.ImportedRecords+report.SkippedRecords, path))
+		a.recordSuccessActivity("Import dry-run", normalizeActivityTarget(collection, path), fmt.Sprintf("Checked %d record(s)", report.ImportedRecords+report.SkippedRecords))
 	} else {
 		a.state.SetLastResult(fmt.Sprintf("Imported %d records from %q", report.ImportedRecords, path))
+		a.recordSuccessActivity("Import NDJSON", normalizeActivityTarget(collection, path), fmt.Sprintf("Imported %d record(s)", report.ImportedRecords))
 	}
 	return report, nil
 }
@@ -542,11 +633,13 @@ func (a *Application) RepairTo(path string) (engine.RepairReport, error) {
 	if err != nil {
 		a.state.SetCurrentStatus("Repair failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Repair database", strings.TrimSpace(path), err)
 		return engine.RepairReport{}, err
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult(fmt.Sprintf("Repair created at %q", path))
+	a.recordSuccessActivity("Repair database", strings.TrimSpace(path), fmt.Sprintf("Recovered %d record(s)", report.RecoveredRecords))
 	return report, nil
 }
 
@@ -567,12 +660,47 @@ func (a *Application) OpenDataFolder() error {
 	if err := command.Start(); err != nil {
 		a.state.SetCurrentStatus("Open folder failed")
 		a.state.SetLastResult(err.Error())
+		a.recordFailureActivity("Open data folder", a.db.DataDir(), err)
 		return fmt.Errorf("open data folder: %w", err)
 	}
 
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Opened data folder")
+	a.recordSuccessActivity("Open data folder", a.db.DataDir(), "Opened application data directory")
 	return nil
+}
+
+func (a *Application) recordSuccessActivity(action, target, detail string) {
+	_ = a.activityStore.Append(ActivityEntry{
+		Action: action,
+		Target: strings.TrimSpace(target),
+		Status: "success",
+		Detail: strings.TrimSpace(detail),
+	})
+}
+
+func (a *Application) recordFailureActivity(action, target string, err error) {
+	if err == nil {
+		return
+	}
+
+	_ = a.activityStore.Append(ActivityEntry{
+		Action: action,
+		Target: strings.TrimSpace(target),
+		Status: "error",
+		Detail: err.Error(),
+	})
+}
+
+func normalizeActivityTarget(parts ...string) string {
+	trimmed := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			trimmed = append(trimmed, part)
+		}
+	}
+	return strings.Join(trimmed, " -> ")
 }
 
 func formatHistoryEntry(input, result string, err error) string {

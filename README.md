@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v7.0:
+This repository now targets MiniDB v9.0:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -41,9 +41,16 @@ This repository now targets MiniDB v7.0:
 - cleaner, more modern, and more resizable native desktop layouts
 - custom desktop theme and polished workflow dialogs
 - stronger in-app overview and operator guidance
+- overview dashboard with collection summaries and recent durable activity
+- dedicated preset library management page
+- persistent activity history for major workspace operations
+- read-only mini SQL queries translated into MiniDB collection and JSON-query reads
+- `ORDER BY` and `COUNT(*)` support in the mini SQL read layer
+- saved-query library and dedicated Query Studio page
+- TSV export for read-only SQL result sets
 - native desktop management UI
 
-It is intentionally not a SQL server, network service, or distributed database.
+It is intentionally not a SQL server, network service, or distributed database, even though it now includes a small read-only SQL-style query surface.
 
 ## Project Purpose
 
@@ -71,6 +78,10 @@ MiniDB Studio Desktop App
 +-- internal/app
 |   +-- UI orchestration
 |   +-- shared app state / status
+|   +-- persistent activity history
+|   +-- collection and dashboard summaries
+|   +-- read-only mini SQL translation layer
+|   +-- saved query library
 |
 +-- internal/engine
 |   +-- DB lifecycle
@@ -108,7 +119,11 @@ minidb-studio/
       main_stub.go
   internal/
     app/
+      activity.go
       application.go
+      insights.go
+      query_store.go
+      sql.go
       state.go
     engine/
       commands.go
@@ -135,8 +150,11 @@ minidb-studio/
       console_page.go
       dialogs.go
       explorer_page.go
+      home_page.go
       main_window.go
       maintenance_page.go
+      preset_manager_page.go
+      query_page.go
   scripts/
     build-desktop.ps1
     setup-local-zig.ps1
@@ -258,6 +276,8 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `KEYS prefix`
 - `COLLECTIONS`
 - `SETIN collection key value`
+- `SELECT columns FROM collection [WHERE json-query] [ORDER BY column ASC|DESC] [LIMIT n]`
+- `SELECT COUNT(*) FROM collection [WHERE json-query]`
 - `GETIN collection key`
 - `DELETEIN collection key`
 - `KEYSIN collection [prefix]`

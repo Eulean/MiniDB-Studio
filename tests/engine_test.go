@@ -2173,3 +2173,194 @@ func TestConcurrentReadsAndWrites(t *testing.T) {
 		t.Fatalf("expected 20 keys after concurrent writes, got %d", len(keys))
 	}
 }
+
+func TestActivityStorePersistsRecentEntries(t *testing.T) {
+	store := studioapp.NewActivityStore(t.TempDir())
+
+	if err := store.Append(studioapp.ActivityEntry{
+		Action: "Import NDJSON",
+		Target: "docs -> sample.ndjson",
+		Status: "success",
+		Detail: "Imported 12 records",
+	}); err != nil {
+		t.Fatalf("append first activity: %v", err)
+	}
+
+	if err := store.Append(studioapp.ActivityEntry{
+		Action: "Compact database",
+		Target: "database",
+		Status: "success",
+		Detail: "Compaction completed",
+	}); err != nil {
+		t.Fatalf("append second activity: %v", err)
+	}
+
+	entries, err := store.ListRecent(10)
+	if err != nil {
+		t.Fatalf("list activities: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 activities, got %d", len(entries))
+	}
+	if entries[0].Action != "Compact database" {
+		t.Fatalf("expected most recent activity first, got %#v", entries[0])
+	}
+}
+
+func TestApplicationCollectionProfilesSummarizeCollections(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed json record: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:2", "plain text", engine.ValueKindRaw); err != nil {
+		t.Fatalf("seed raw record: %v", err)
+	}
+	if err := db.SetTypedInCollection("users", "user:1", `{"name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed second collection: %v", err)
+	}
+
+	profiles, err := application.CollectionProfiles()
+	if err != nil {
+		t.Fatalf("collection profiles: %v", err)
+	}
+	if len(profiles) < 2 {
+		t.Fatalf("expected at least 2 collection profiles, got %#v", profiles)
+	}
+
+	var docsProfile studioapp.CollectionProfile
+	found := false
+	for _, profile := range profiles {
+		if profile.Name == "docs" {
+			docsProfile = profile
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected docs profile in %#v", profiles)
+	}
+	if docsProfile.RecordCount != 2 || docsProfile.JSONRecordCount != 1 || docsProfile.RawRecordCount != 1 {
+		t.Fatalf("unexpected docs profile: %#v", docsProfile)
+	}
+}
+
+func TestApplicationExecuteCommandSupportsMiniSQL(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"active":true,"name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:2", `{"active":false,"name":"Grace"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 2: %v", err)
+	}
+
+	result, err := application.ExecuteCommand(`SELECT key, value_preview FROM docs WHERE active=true LIMIT 5`)
+	if err != nil {
+		t.Fatalf("execute SQL select: %v", err)
+	}
+	if !strings.Contains(result, "key\tvalue_preview") {
+		t.Fatalf("unexpected SQL header: %q", result)
+	}
+	if !strings.Contains(result, "doc:1") {
+		t.Fatalf("expected matching row in SQL result: %q", result)
+	}
+	if strings.Contains(result, "doc:2") {
+		t.Fatalf("expected SQL filter to exclude doc:2: %q", result)
+	}
+	if !strings.Contains(result, "1 row(s)") {
+		t.Fatalf("expected row count in SQL result: %q", result)
+	}
+}
+
+func TestQueryStoreSaveRenameAndDelete(t *testing.T) {
+	store := studioapp.NewQueryStore(t.TempDir())
+
+	if err := store.Save(studioapp.SavedQuery{
+		Name:      "Active Docs",
+		QueryText: `SELECT key FROM docs WHERE active=true LIMIT 10`,
+		Notes:     "Main active documents query",
+	}); err != nil {
+		t.Fatalf("save query: %v", err)
+	}
+
+	queries, err := store.List()
+	if err != nil {
+		t.Fatalf("list queries: %v", err)
+	}
+	if len(queries) != 1 || queries[0].Name != "Active Docs" {
+		t.Fatalf("unexpected saved queries: %#v", queries)
+	}
+
+	if err := store.Rename("Active Docs", "Open Docs"); err != nil {
+		t.Fatalf("rename query: %v", err)
+	}
+	query, err := store.Find("Open Docs")
+	if err != nil {
+		t.Fatalf("find renamed query: %v", err)
+	}
+	if !strings.Contains(query.QueryText, "SELECT key FROM docs") {
+		t.Fatalf("unexpected renamed query text: %#v", query)
+	}
+
+	if err := store.Delete("Open Docs"); err != nil {
+		t.Fatalf("delete query: %v", err)
+	}
+	remaining, err := store.List()
+	if err != nil {
+		t.Fatalf("list queries after delete: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected query store to be empty, got %#v", remaining)
+	}
+}
+
+func TestMiniSQLCountOrderAndExport(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"active":true,"name":"Ada"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 1: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := db.SetTypedInCollection("docs", "doc:2", `{"active":true,"name":"Grace"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 2: %v", err)
+	}
+
+	countResult, err := application.ExecuteCommand(`SELECT COUNT(*) FROM docs WHERE active=true`)
+	if err != nil {
+		t.Fatalf("execute SQL count: %v", err)
+	}
+	if !strings.Contains(countResult, "count") || !strings.Contains(countResult, "\n2\n") {
+		t.Fatalf("unexpected count result: %q", countResult)
+	}
+
+	orderResult, err := application.ExecuteCommand(`SELECT key FROM docs ORDER BY updated_at DESC LIMIT 2`)
+	if err != nil {
+		t.Fatalf("execute ordered SQL query: %v", err)
+	}
+	if strings.Index(orderResult, "doc:2") > strings.Index(orderResult, "doc:1") {
+		t.Fatalf("expected doc:2 before doc:1 in descending updated_at order: %q", orderResult)
+	}
+
+	exportPath := filepath.Join(dir, "query-result.tsv")
+	if err := application.ExportMiniSQLResult(`SELECT key, value_kind FROM docs ORDER BY key ASC LIMIT 2`, exportPath); err != nil {
+		t.Fatalf("export SQL result: %v", err)
+	}
+	exportedData, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read exported SQL result: %v", err)
+	}
+	exportedText := string(exportedData)
+	if !strings.Contains(exportedText, "key\tvalue_kind") || !strings.Contains(exportedText, "doc:1\tjson") {
+		t.Fatalf("unexpected exported SQL result: %q", exportedText)
+	}
+}

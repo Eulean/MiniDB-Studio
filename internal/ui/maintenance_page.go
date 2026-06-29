@@ -504,7 +504,7 @@ func NewMaintenancePage(window fyne.Window, application *studioapp.Application, 
 	split := container.NewHSplit(leftColumn, rightColumn)
 	split.Offset = 0.62
 
-	page.root = standardScroll(split)
+	page.root = container.NewPadded(split)
 
 	page.recommendationsValue.Wrapping = fyne.TextWrapWord
 	page.healthValue.Wrapping = fyne.TextWrapWord
