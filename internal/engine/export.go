@@ -40,6 +40,30 @@ func (db *DB) ExportCollection(collection, destinationPath string) (ExportReport
 		}
 	}
 
+	return db.exportEntriesLocked(keys, destinationPath, targetCollection, "")
+}
+
+// ExportJSONQueryCollection writes only the live JSON records matching one query expression.
+func (db *DB) ExportJSONQueryCollection(collection, queryText, destinationPath string) (ExportReport, error) {
+	expression, err := ParseJSONQueryExpression(queryText)
+	if err != nil {
+		return ExportReport{}, err
+	}
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	targetCollection := normalizeCollection(collection)
+	keys := db.findKeysByJSONExpressionLocked(targetCollection, "", expression)
+	canonicalKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		canonicalKeys = append(canonicalKeys, canonicalKey(targetCollection, key))
+	}
+
+	return db.exportEntriesLocked(canonicalKeys, destinationPath, targetCollection, strings.TrimSpace(queryText))
+}
+
+func (db *DB) exportEntriesLocked(canonicalKeys []string, destinationPath, collection, queryText string) (ExportReport, error) {
 	file, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return ExportReport{}, fmt.Errorf("create export file %q: %w", destinationPath, err)
@@ -47,7 +71,7 @@ func (db *DB) ExportCollection(collection, destinationPath string) (ExportReport
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	for _, canonical := range keys {
+	for _, canonical := range canonicalKeys {
 		entry := db.index[canonical]
 		value, err := db.readValueForEntry(entry)
 		if err != nil {
@@ -74,8 +98,9 @@ func (db *DB) ExportCollection(collection, destinationPath string) (ExportReport
 
 	return ExportReport{
 		DestinationPath: destinationPath,
-		Collection:      targetCollection,
-		ExportedRecords: len(keys),
+		Collection:      collection,
+		QueryText:       queryText,
+		ExportedRecords: len(canonicalKeys),
 	}, nil
 }
 

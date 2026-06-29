@@ -23,6 +23,11 @@ const (
 	ValueKindJSON     = "json"
 )
 
+const (
+	ImportConflictSkip      = "skip"
+	ImportConflictOverwrite = "overwrite"
+)
+
 // OpenOptions lets tests and future app features tune database internals safely.
 type OpenOptions struct {
 	SegmentSizeLimit int64
@@ -67,8 +72,10 @@ type BatchOperation struct {
 	ValueKind  string
 }
 
-// JSONQueryCondition describes one equality predicate against an indexed JSON path.
+// JSONQueryCondition describes one predicate against an indexed JSON path.
+// Negated conditions are evaluated as logical NOT of the underlying operator.
 type JSONQueryCondition struct {
+	Negated  bool
 	Path     string
 	Operator string
 	Value    string
@@ -108,6 +115,7 @@ type ValidationReport struct {
 type ExportReport struct {
 	DestinationPath string
 	Collection      string
+	QueryText       string
 	ExportedRecords int
 }
 
@@ -117,6 +125,57 @@ type RepairReport struct {
 	RecoveredRecords int
 	UsedSnapshot     bool
 	Warnings         []string
+}
+
+// ImportReport describes one NDJSON import run into a collection.
+type ImportReport struct {
+	SourcePath      string
+	Collection      string
+	KeyField        string
+	ConflictMode    string
+	DryRun          bool
+	ImportedRecords int
+	SkippedRecords  int
+}
+
+// ImportPreviewReport describes the outcome of analyzing an NDJSON file before writing.
+type ImportPreviewReport struct {
+	SourcePath           string
+	Collection           string
+	KeyField             string
+	ConflictMode         string
+	TotalLines           int
+	ValidDocuments       int
+	InvalidLines         int
+	MissingKeyCount      int
+	DuplicateKeysInFile  int
+	ExistingKeyConflicts int
+	NewRecordCount       int
+	OverwriteCount       int
+	SkipCount            int
+	SampleKeys           []string
+	FirstProblems        []string
+	FieldSummaries       []ImportFieldSummary
+	TotalDistinctFields  int
+	ChangeSamples        []ImportPreviewChangeSample
+}
+
+// ImportFieldSummary describes one discovered JSON field path during import preview.
+type ImportFieldSummary struct {
+	Path          string
+	ObservedCount int
+	Types         []string
+}
+
+// ImportPreviewChangeSample describes one representative import outcome for review.
+type ImportPreviewChangeSample struct {
+	Key             string
+	Status          string
+	CurrentPreview  string
+	IncomingPreview string
+	AddedFields     []string
+	RemovedFields   []string
+	ChangedFields   []string
 }
 
 // MaintenanceReport summarizes health and recommendation signals for the maintenance UI.

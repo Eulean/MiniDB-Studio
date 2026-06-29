@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v3.7 in progress
+- MiniDB Studio v7.0 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -124,7 +124,162 @@
   - parentheses / grouped precedence
   - NOT queries
   - background indexing workers
+- remote/cloud features
+
+## V3.8 Scope
+- Grouped JSON query precedence with parentheses
+- Existing implicit AND semantics remain inside a sequence of conditions
+- `FINDIN collection active=true OR (profile.score>=90 tags=admin)` console support
+- Nested grouped OR/AND expressions compile into the same engine-side OR-of-ANDs evaluator
+- Explorer JSON query expressions support the same grouped syntax
+- Tests for grouped precedence, nested grouped OR, and invalid parentheses
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - NOT queries
+  - quoted values with spaces in JSON query predicates
+  - background indexing workers
   - remote/cloud features
+
+## V3.9 Scope
+- JSON query negation with `NOT`
+- Quoted JSON query values so spaces can be matched safely
+- Grouped `NOT` support compiled into the same OR-of-ANDs evaluator
+- `FINDIN collection (tags=admin OR tags=reviewer) NOT archived=true` console support
+- `FINDIN collection profile.name="Ada Lovelace"` console support
+- Explorer JSON query expressions support `NOT` and quoted values through the same parser
+- Tests for negation, grouped negation, quoted values, and invalid quote syntax
+- Explicitly not yet in this slice:
+  - SQL parsing
+  - regex queries
+  - wildcard path matching
+  - background indexing workers
+  - remote/cloud features
+
+## V4.0 Scope
+- NDJSON import for one target collection
+- Stable key extraction from a default `id` field or a caller-supplied key field
+- Conflict handling with `skip` and `overwrite`
+- Console support through `IMPORTNDJSON`
+- Maintenance-page import workflow with file picker and options
+- Tests for success paths, custom key field, conflict handling, invalid JSON, and missing key field
+- Explicitly not yet in this slice:
+  - streaming progress UI
+  - nested key-field path extraction
+  - remote/cloud import sources
+  - background import workers
+
+## V4.1 Scope
+- NDJSON import preview before durable writes
+- Dry-run import validation using the same engine path
+- Preview statistics for invalid lines, missing keys, duplicate source keys, and existing-key conflicts
+- Console support through `PREVIEWNDJSON` and `IMPORTNDJSON ... dry-run`
+- Maintenance-page preview flow before confirming import
+- Tests for preview accounting, duplicate detection, conflict detection, and dry-run no-op behavior
+- Explicitly not yet in this slice:
+  - field-level preview diff rendering
+  - streaming progress bars
+  - remote/cloud import sources
+  - background import workers
+
+## V4.2 Scope
+- Schema-aware NDJSON preview field summaries
+- Flattened field-path discovery with observed type hints
+- Preview-side field counts so users can inspect unknown datasets before import
+
+## V4.3 Scope
+- Richer dataset review workflows in the maintenance UI
+- Preview dialogs that show both record counts and discovered field hints
+- Import confirmation flow that reuses the preview report directly
+
+## V4.4 Scope
+- Filtered JSON export by collection query expression
+- Console support through `EXPORTQUERY`
+- Maintenance export workflow with optional query text
+
+## V5.0 Scope
+- Dataset review workflow that combines preview, dry-run import, real import, and filtered export
+- Console and desktop parity for the main dataset operations
+- Tests for schema-aware preview, dry-run safety, and filtered export behavior
+- Explicitly not yet in this slice:
+  - schema evolution tracking across files
+  - import diff visualization
+  - background import/export jobs
+  - remote/cloud dataset sources
+
+## V5.1 Scope
+- Import review with `new`, `overwrite`, and `skip` classification counts
+- Preview-side change samples with compact current/incoming value previews
+- Dry-run/import consistency checks against the same analyzed review report
+- Maintenance review dialog surfaces overwrite candidates before confirmation
+- Tests for classification counts, overwrite samples, and dry-run consistency
+
+## V5.2 Scope
+- Field-level JSON change hints for overwrite candidates
+- Added, removed, and changed path summaries in preview samples
+- Nested path detection for object-field changes
+- Maintenance review dialog surfaces compact field-level diff hints before confirmation
+- Tests for added, removed, changed, and nested path detection
+
+## V5.4 Scope
+- Saved dataset workflow presets stored locally in app data
+- Presets capture collection, key field, conflict mode, and optional query text
+- Maintenance preview/import/export dialogs support preset load, save, and delete
+- Tests for preset save/load, overwrite-by-name, delete, and empty-name rejection
+
+## V5.5 Scope
+- Preset-aware console commands for preview, import, dry-run import, and filtered export
+- App-layer preset resolution so the engine stays focused on database/data operations
+- Tests for preset-backed preview/import/export commands and missing-preset errors
+
+## V5.6 Scope
+- Preset inspection commands through `LISTPRESETS` and `SHOWPRESET`
+- App-layer formatting for saved workflow summaries without expanding engine scope
+- Console/help documentation updates so preset discovery is self-serve
+- Tests for preset listing, preset detail output, and missing-preset errors
+
+## V5.7 Scope
+- Preset management commands through `SAVEPRESET` and `DELETEPRESET`
+- Compact console syntax for creating or overwriting saved workflows
+- App-layer validation for preset name, collection, key field, and conflict mode
+- Tests for preset save, overwrite, delete, and validation failures
+
+## V5.8 Scope
+- Preset rename command through `RENAMEDPRESET`
+- Durable rename behavior with conflict checks so one workflow cannot silently replace another
+- Console/help documentation updates for the completed preset lifecycle
+- Tests for rename success, missing-source failure, and rename-conflict failure
+
+## V5.9 Scope
+- Preset duplication command through `DUPLICATEPRESET`
+- Portable preset JSON export/import through `EXPORTPRESETCONFIG` and `IMPORTPRESETCONFIG`
+- Store-level validation and file helpers so workflow configs can move between local setups
+- Tests for duplicate success/conflicts plus preset config export/import flows
+
+## V6.0 Scope
+- Cleaner and more modern native desktop shell
+- Better use of cards, grouped sections, and resizable split layouts
+- Explorer, Console, and Maintenance layouts tuned for larger and smaller window sizes
+- Keep every existing action working while improving clarity and desktop usability
+
+## V6.1 Scope
+- Custom Fyne theme for a cleaner desktop visual identity
+- Improved spacing, button colors, focus colors, and typography sizing
+- Keep the app native while making it feel less default and more production-ready
+
+## V6.2 Scope
+- Better dialog and workflow form presentation
+- Larger, scroll-safe record editor and maintenance forms
+- Consistent card-based structure for export, preview, and import flows
+
+## V6.3 Scope
+- Stronger About/overview experience
+- Better product framing, workflow guidance, and command-family documentation inside the app
+- Finish the UI pass with more intentional desktop information architecture
+
+## V7.0 Scope
+- Consolidate the modernized shell, theme, dialogs, and overview experience
+- Keep layouts resizable and readable across the main work pages
+- Prepare the repo for commit and push after the final validation pass
 
 ## Proposed File Changes
 - Keep:
@@ -211,5 +366,5 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v3.7 is focused on boolean OR composition for JSON queries.
-- After that lands, future work can focus on grouped precedence, NOT queries, import/query workflows, and background maintenance workers.
+- MiniDB Studio v7.0 completes the current UI modernization pass and prepares the repo for release-style packaging and Git publishing.
+- After that lands, future work can focus on richer visual diff UX, schema suggestions, wildcard/path helpers, and background maintenance workers.

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 
 // Application coordinates the database engine and the desktop UI state.
 type Application struct {
-	db    *engine.DB
-	state *State
+	db          *engine.DB
+	state       *State
+	presetStore *DatasetPresetStore
 }
 
 // NewApplication opens MiniDB and prepares the shared application state.
@@ -25,9 +27,23 @@ func NewApplication() (*Application, error) {
 	}
 
 	return &Application{
-		db:    db,
-		state: NewState(db.DataDir()),
+		db:          db,
+		state:       NewState(db.DataDir()),
+		presetStore: NewDatasetPresetStore(db.DataDir()),
 	}, nil
+}
+
+// NewApplicationForTests creates an application wrapper around an existing DB for tests.
+func NewApplicationForTests(db *engine.DB, presetStore *DatasetPresetStore) *Application {
+	if presetStore == nil {
+		presetStore = NewDatasetPresetStore(db.DataDir())
+	}
+
+	return &Application{
+		db:          db,
+		state:       NewState(db.DataDir()),
+		presetStore: presetStore,
+	}
 }
 
 // Close releases database resources when the desktop window exits.
@@ -38,6 +54,78 @@ func (a *Application) Close() error {
 // State exposes the shared UI state to window components.
 func (a *Application) State() *State {
 	return a.state
+}
+
+// ListDatasetPresets exposes reusable workflow presets for the maintenance UI.
+func (a *Application) ListDatasetPresets() ([]DatasetPreset, error) {
+	return a.presetStore.List()
+}
+
+// FindDatasetPreset resolves one reusable workflow preset by name.
+func (a *Application) FindDatasetPreset(name string) (DatasetPreset, error) {
+	return a.presetStore.Find(name)
+}
+
+// SaveDatasetPreset persists one reusable workflow preset.
+func (a *Application) SaveDatasetPreset(preset DatasetPreset) error {
+	if err := a.presetStore.Save(preset); err != nil {
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Saved preset %q", strings.TrimSpace(preset.Name)))
+	return nil
+}
+
+// DeleteDatasetPreset removes one reusable workflow preset by name.
+func (a *Application) DeleteDatasetPreset(name string) error {
+	if err := a.presetStore.Delete(name); err != nil {
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Deleted preset %q", strings.TrimSpace(name)))
+	return nil
+}
+
+// RenameDatasetPreset changes one preset name while preserving the saved workflow fields.
+func (a *Application) RenameDatasetPreset(oldName, newName string) error {
+	if err := a.presetStore.Rename(oldName, newName); err != nil {
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Renamed preset %q to %q", strings.TrimSpace(oldName), strings.TrimSpace(newName)))
+	return nil
+}
+
+// DuplicateDatasetPreset copies one preset to a new name while preserving its workflow fields.
+func (a *Application) DuplicateDatasetPreset(sourceName, newName string) error {
+	if err := a.presetStore.Duplicate(sourceName, newName); err != nil {
+		a.state.SetLastResult(err.Error())
+		return err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Duplicated preset %q to %q", strings.TrimSpace(sourceName), strings.TrimSpace(newName)))
+	return nil
+}
+
+// ExportDatasetPresetConfig writes one saved preset to a standalone JSON file.
+func (a *Application) ExportDatasetPresetConfig(name, path string) (DatasetPreset, error) {
+	preset, err := a.presetStore.Export(name, path)
+	if err != nil {
+		a.state.SetLastResult(err.Error())
+		return DatasetPreset{}, err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Exported preset %q to %q", strings.TrimSpace(name), strings.TrimSpace(path)))
+	return preset, nil
+}
+
+// ImportDatasetPresetConfig loads one standalone preset JSON file into local preset storage.
+func (a *Application) ImportDatasetPresetConfig(path string) (DatasetPreset, error) {
+	preset, err := a.presetStore.Import(path)
+	if err != nil {
+		a.state.SetLastResult(err.Error())
+		return DatasetPreset{}, err
+	}
+	a.state.SetLastResult(fmt.Sprintf("Imported preset %q from %q", preset.Name, strings.TrimSpace(path)))
+	return preset, nil
 }
 
 // DataDir exposes the active storage path for the status bar and maintenance page.
@@ -155,7 +243,7 @@ func (a *Application) DeleteRecord(collection, key string) error {
 func (a *Application) ExecuteCommand(input string) (string, error) {
 	a.state.SetCurrentStatus("Running command...")
 
-	result, err := a.db.Execute(input)
+	result, err := a.executePresetAwareCommand(input)
 	historyEntry := formatHistoryEntry(input, result, err)
 	a.state.AppendHistory(historyEntry)
 
@@ -168,6 +256,133 @@ func (a *Application) ExecuteCommand(input string) (string, error) {
 	a.state.SetCurrentStatus("Ready")
 	a.state.SetLastResult("Command completed")
 	return result, nil
+}
+
+func (a *Application) executePresetAwareCommand(input string) (string, error) {
+	commandText := strings.TrimSpace(input)
+	upper := strings.ToUpper(commandText)
+
+	switch {
+	case upper == "LISTPRESETS":
+		presets, err := a.ListDatasetPresets()
+		if err != nil {
+			return "", err
+		}
+		return formatPresetListResult(presets), nil
+	case strings.HasPrefix(upper, "SAVEPRESET "):
+		preset, err := parseSavePresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		if err := a.SaveDatasetPreset(preset); err != nil {
+			return "", err
+		}
+		return formatSavedPresetResult(preset), nil
+	case strings.HasPrefix(upper, "DELETEPRESET "):
+		presetName, err := parseDeletePresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		if err := a.DeleteDatasetPreset(presetName); err != nil {
+			return "", err
+		}
+		return formatDeletedPresetResult(presetName), nil
+	case strings.HasPrefix(upper, "RENAMEDPRESET "):
+		oldName, newName, err := parseRenamePresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		if err := a.RenameDatasetPreset(oldName, newName); err != nil {
+			return "", err
+		}
+		return formatRenamedPresetResult(oldName, newName), nil
+	case strings.HasPrefix(upper, "DUPLICATEPRESET "):
+		sourceName, newName, err := parseDuplicatePresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		if err := a.DuplicateDatasetPreset(sourceName, newName); err != nil {
+			return "", err
+		}
+		return formatDuplicatedPresetResult(sourceName, newName), nil
+	case strings.HasPrefix(upper, "EXPORTPRESETCONFIG "):
+		presetName, destinationPath, err := parsePresetPathCommand(commandText, "EXPORTPRESETCONFIG")
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.ExportDatasetPresetConfig(presetName, destinationPath)
+		if err != nil {
+			return "", err
+		}
+		return formatExportedPresetConfigResult(preset, destinationPath), nil
+	case strings.HasPrefix(upper, "IMPORTPRESETCONFIG "):
+		sourcePath, err := parsePresetConfigImportCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.ImportDatasetPresetConfig(sourcePath)
+		if err != nil {
+			return "", err
+		}
+		return formatImportedPresetConfigResult(preset, sourcePath), nil
+	case strings.HasPrefix(upper, "SHOWPRESET "):
+		presetName, err := parseShowPresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.FindDatasetPreset(presetName)
+		if err != nil {
+			return "", err
+		}
+		return formatShowPresetResult(preset), nil
+	case strings.HasPrefix(upper, "PREVIEWPRESET "):
+		presetName, sourcePath, err := parsePresetPathCommand(commandText, "PREVIEWPRESET")
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.FindDatasetPreset(presetName)
+		if err != nil {
+			return "", err
+		}
+		report, err := a.db.PreviewNDJSONImport(preset.Collection, sourcePath, preset.KeyField, preset.ConflictMode)
+		if err != nil {
+			return "", err
+		}
+		return formatPresetPreviewResult(preset, report), nil
+	case strings.HasPrefix(upper, "IMPORTPRESET "):
+		presetName, sourcePath, dryRun, err := parseImportPresetCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.FindDatasetPreset(presetName)
+		if err != nil {
+			return "", err
+		}
+		report, err := a.db.ImportNDJSON(preset.Collection, sourcePath, preset.KeyField, preset.ConflictMode, dryRun)
+		if err != nil {
+			return "", err
+		}
+		return formatPresetImportResult(preset, report), nil
+	case strings.HasPrefix(upper, "EXPORTPRESET "):
+		presetName, destinationPath, err := parsePresetPathCommand(commandText, "EXPORTPRESET")
+		if err != nil {
+			return "", err
+		}
+		preset, err := a.FindDatasetPreset(presetName)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(preset.QueryText) == "" {
+			return "", fmt.Errorf("preset %q does not define a query for EXPORTPRESET", preset.Name)
+		}
+		report, err := a.db.ExportJSONQueryCollection(preset.Collection, preset.QueryText, destinationPath)
+		if err != nil {
+			return "", err
+		}
+		return formatPresetExportResult(preset, report), nil
+	default:
+		return a.db.Execute(input)
+	}
 }
 
 // CommandHistory returns the console history text for the output panel.
@@ -262,6 +477,58 @@ func (a *Application) ExportCollection(collection, path string) (engine.ExportRe
 	return report, nil
 }
 
+// ExportJSONQueryCollection writes the matching JSON document slice to the requested destination.
+func (a *Application) ExportJSONQueryCollection(collection, queryText, path string) (engine.ExportReport, error) {
+	a.state.SetCurrentStatus("Exporting filtered data...")
+
+	report, err := a.db.ExportJSONQueryCollection(collection, queryText, path)
+	if err != nil {
+		a.state.SetCurrentStatus("Filtered export failed")
+		a.state.SetLastResult(err.Error())
+		return engine.ExportReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Filtered export created at %q", path))
+	return report, nil
+}
+
+// PreviewNDJSONImport analyzes one NDJSON file without writing records.
+func (a *Application) PreviewNDJSONImport(collection, path, keyField, conflictMode string) (engine.ImportPreviewReport, error) {
+	a.state.SetCurrentStatus("Previewing NDJSON import...")
+
+	report, err := a.db.PreviewNDJSONImport(collection, path, keyField, conflictMode)
+	if err != nil {
+		a.state.SetCurrentStatus("Preview failed")
+		a.state.SetLastResult(err.Error())
+		return engine.ImportPreviewReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	a.state.SetLastResult(fmt.Sprintf("Previewed %d NDJSON lines from %q", report.TotalLines, path))
+	return report, nil
+}
+
+// ImportNDJSON loads one NDJSON file into the requested collection and updates status text.
+func (a *Application) ImportNDJSON(collection, path, keyField, conflictMode string, dryRun bool) (engine.ImportReport, error) {
+	a.state.SetCurrentStatus("Importing NDJSON data...")
+
+	report, err := a.db.ImportNDJSON(collection, path, keyField, conflictMode, dryRun)
+	if err != nil {
+		a.state.SetCurrentStatus("Import failed")
+		a.state.SetLastResult(err.Error())
+		return engine.ImportReport{}, err
+	}
+
+	a.state.SetCurrentStatus("Ready")
+	if dryRun {
+		a.state.SetLastResult(fmt.Sprintf("Dry-run import checked %d records from %q", report.ImportedRecords+report.SkippedRecords, path))
+	} else {
+		a.state.SetLastResult(fmt.Sprintf("Imported %d records from %q", report.ImportedRecords, path))
+	}
+	return report, nil
+}
+
 // DefaultRepairDir returns a sensible destination folder for salvage output.
 func (a *Application) DefaultRepairDir() string {
 	return filepath.Join(a.db.DataDir(), "repair-output")
@@ -320,5 +587,346 @@ func formatHistoryEntry(input, result string, err error) string {
 		lines = append(lines, result)
 	}
 
+	return strings.Join(lines, "\n")
+}
+
+func parsePresetPathCommand(commandText, verb string) (string, string, error) {
+	rest := strings.TrimSpace(commandText[len(verb):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", "", err
+	}
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("%s requires preset name and path", verb)
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return "", "", fmt.Errorf("%s preset name must not be empty", verb)
+	}
+	if strings.TrimSpace(args[1]) == "" {
+		return "", "", fmt.Errorf("%s path must not be empty", verb)
+	}
+	return strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), nil
+}
+
+func parseImportPresetCommand(commandText string) (string, string, bool, error) {
+	rest := strings.TrimSpace(commandText[len("IMPORTPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", "", false, err
+	}
+	if len(args) < 2 || len(args) > 3 {
+		return "", "", false, fmt.Errorf("IMPORTPRESET requires preset name, path, and optional dry-run")
+	}
+	presetName := strings.TrimSpace(args[0])
+	sourcePath := strings.TrimSpace(args[1])
+	dryRun := false
+	if len(args) == 3 {
+		if !strings.EqualFold(strings.TrimSpace(args[2]), "dry-run") {
+			return "", "", false, fmt.Errorf("unexpected IMPORTPRESET argument %q", args[2])
+		}
+		dryRun = true
+	}
+	if presetName == "" {
+		return "", "", false, fmt.Errorf("IMPORTPRESET preset name must not be empty")
+	}
+	if sourcePath == "" {
+		return "", "", false, fmt.Errorf("IMPORTPRESET path must not be empty")
+	}
+	return presetName, sourcePath, dryRun, nil
+}
+
+func parseShowPresetCommand(commandText string) (string, error) {
+	rest := strings.TrimSpace(commandText[len("SHOWPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", err
+	}
+	if len(args) != 1 {
+		return "", fmt.Errorf("SHOWPRESET requires exactly one preset name")
+	}
+	presetName := strings.TrimSpace(args[0])
+	if presetName == "" {
+		return "", fmt.Errorf("SHOWPRESET preset name must not be empty")
+	}
+	return presetName, nil
+}
+
+func parseDeletePresetCommand(commandText string) (string, error) {
+	rest := strings.TrimSpace(commandText[len("DELETEPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", err
+	}
+	if len(args) != 1 {
+		return "", fmt.Errorf("DELETEPRESET requires exactly one preset name")
+	}
+	presetName := strings.TrimSpace(args[0])
+	if presetName == "" {
+		return "", fmt.Errorf("DELETEPRESET preset name must not be empty")
+	}
+	return presetName, nil
+}
+
+func parseSavePresetCommand(commandText string) (DatasetPreset, error) {
+	rest := strings.TrimSpace(commandText[len("SAVEPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return DatasetPreset{}, err
+	}
+	if len(args) < 4 || len(args) > 5 {
+		return DatasetPreset{}, fmt.Errorf("SAVEPRESET requires name, collection, key field, conflict mode, and optional query")
+	}
+
+	preset := DatasetPreset{
+		Name:         strings.TrimSpace(args[0]),
+		Collection:   strings.TrimSpace(args[1]),
+		KeyField:     strings.TrimSpace(args[2]),
+		ConflictMode: strings.TrimSpace(strings.ToLower(args[3])),
+	}
+	if len(args) == 5 {
+		preset.QueryText = strings.TrimSpace(args[4])
+	}
+
+	if preset.Name == "" {
+		return DatasetPreset{}, fmt.Errorf("SAVEPRESET preset name must not be empty")
+	}
+	if preset.Collection == "" {
+		return DatasetPreset{}, fmt.Errorf("SAVEPRESET collection must not be empty")
+	}
+	if preset.KeyField == "" {
+		return DatasetPreset{}, fmt.Errorf("SAVEPRESET key field must not be empty")
+	}
+	switch preset.ConflictMode {
+	case "skip", "overwrite":
+	default:
+		return DatasetPreset{}, fmt.Errorf("SAVEPRESET conflict mode must be skip or overwrite")
+	}
+
+	return preset, nil
+}
+
+func parseRenamePresetCommand(commandText string) (string, string, error) {
+	rest := strings.TrimSpace(commandText[len("RENAMEDPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", "", err
+	}
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("RENAMEDPRESET requires old name and new name")
+	}
+
+	oldName := strings.TrimSpace(args[0])
+	newName := strings.TrimSpace(args[1])
+	if oldName == "" {
+		return "", "", fmt.Errorf("RENAMEDPRESET old preset name must not be empty")
+	}
+	if newName == "" {
+		return "", "", fmt.Errorf("RENAMEDPRESET new preset name must not be empty")
+	}
+	return oldName, newName, nil
+}
+
+func parseDuplicatePresetCommand(commandText string) (string, string, error) {
+	rest := strings.TrimSpace(commandText[len("DUPLICATEPRESET"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", "", err
+	}
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("DUPLICATEPRESET requires source name and new name")
+	}
+
+	sourceName := strings.TrimSpace(args[0])
+	newName := strings.TrimSpace(args[1])
+	if sourceName == "" {
+		return "", "", fmt.Errorf("DUPLICATEPRESET source preset name must not be empty")
+	}
+	if newName == "" {
+		return "", "", fmt.Errorf("DUPLICATEPRESET new preset name must not be empty")
+	}
+	return sourceName, newName, nil
+}
+
+func parsePresetConfigImportCommand(commandText string) (string, error) {
+	rest := strings.TrimSpace(commandText[len("IMPORTPRESETCONFIG"):])
+	args, err := tokenizeAppCommandArguments(rest)
+	if err != nil {
+		return "", err
+	}
+	if len(args) != 1 {
+		return "", fmt.Errorf("IMPORTPRESETCONFIG requires exactly one path")
+	}
+
+	sourcePath := strings.TrimSpace(args[0])
+	if sourcePath == "" {
+		return "", fmt.Errorf("IMPORTPRESETCONFIG path must not be empty")
+	}
+	return sourcePath, nil
+}
+
+func tokenizeAppCommandArguments(input string) ([]string, error) {
+	tokens := make([]string, 0, 4)
+	var current strings.Builder
+	inQuotes := false
+	escaping := false
+
+	flushCurrent := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+
+	for _, r := range input {
+		switch {
+		case escaping:
+			current.WriteRune(r)
+			escaping = false
+		case r == '\\' && inQuotes:
+			current.WriteRune(r)
+			escaping = true
+		case r == '"':
+			current.WriteRune(r)
+			inQuotes = !inQuotes
+		case inQuotes:
+			current.WriteRune(r)
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flushCurrent()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escaping {
+		return nil, fmt.Errorf("invalid command arguments: unterminated escape sequence")
+	}
+	if inQuotes {
+		return nil, fmt.Errorf("invalid command arguments: missing closing quote")
+	}
+
+	flushCurrent()
+	for index, token := range tokens {
+		if strings.HasPrefix(token, "\"") && strings.HasSuffix(token, "\"") && len(token) >= 2 {
+			inner := token[1 : len(token)-1]
+			inner = strings.ReplaceAll(inner, `\"`, `"`)
+			inner = strings.ReplaceAll(inner, `\\`, `\`)
+			tokens[index] = inner
+		}
+	}
+
+	return tokens, nil
+}
+
+func formatPresetPreviewResult(preset DatasetPreset, report engine.ImportPreviewReport) string {
+	return strings.Join([]string{
+		"preset=" + preset.Name,
+		"collection=" + report.Collection,
+		"key_field=" + report.KeyField,
+		"conflict_mode=" + report.ConflictMode,
+		"total_lines=" + strconv.Itoa(report.TotalLines),
+		"valid_documents=" + strconv.Itoa(report.ValidDocuments),
+		"new_records=" + strconv.Itoa(report.NewRecordCount),
+		"overwrite_candidates=" + strconv.Itoa(report.OverwriteCount),
+		"skipped_by_mode=" + strconv.Itoa(report.SkipCount),
+	}, "\n")
+}
+
+func formatPresetImportResult(preset DatasetPreset, report engine.ImportReport) string {
+	return strings.Join([]string{
+		"preset=" + preset.Name,
+		"collection=" + report.Collection,
+		"key_field=" + report.KeyField,
+		"conflict_mode=" + report.ConflictMode,
+		"dry_run=" + strconv.FormatBool(report.DryRun),
+		"imported_records=" + strconv.Itoa(report.ImportedRecords),
+		"skipped_records=" + strconv.Itoa(report.SkippedRecords),
+	}, "\n")
+}
+
+func formatPresetExportResult(preset DatasetPreset, report engine.ExportReport) string {
+	lines := []string{
+		"preset=" + preset.Name,
+		"collection=" + report.Collection,
+		"destination=" + report.DestinationPath,
+		"exported_records=" + strconv.Itoa(report.ExportedRecords),
+	}
+	if strings.TrimSpace(report.QueryText) != "" {
+		lines = append(lines, "query="+report.QueryText)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatPresetListResult(presets []DatasetPreset) string {
+	if len(presets) == 0 {
+		return "preset_count=0"
+	}
+
+	lines := []string{"preset_count=" + strconv.Itoa(len(presets))}
+	for _, preset := range presets {
+		lines = append(lines, "preset="+preset.Name)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatShowPresetResult(preset DatasetPreset) string {
+	lines := []string{
+		"name=" + preset.Name,
+		"collection=" + preset.Collection,
+		"key_field=" + preset.KeyField,
+		"conflict_mode=" + preset.ConflictMode,
+	}
+	if strings.TrimSpace(preset.QueryText) != "" {
+		lines = append(lines, "query="+preset.QueryText)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatSavedPresetResult(preset DatasetPreset) string {
+	lines := []string{
+		"saved_preset=" + preset.Name,
+		"collection=" + preset.Collection,
+		"key_field=" + preset.KeyField,
+		"conflict_mode=" + preset.ConflictMode,
+	}
+	if strings.TrimSpace(preset.QueryText) != "" {
+		lines = append(lines, "query="+preset.QueryText)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatDeletedPresetResult(name string) string {
+	return "deleted_preset=" + strings.TrimSpace(name)
+}
+
+func formatRenamedPresetResult(oldName, newName string) string {
+	return strings.Join([]string{
+		"renamed_preset=" + strings.TrimSpace(oldName),
+		"new_name=" + strings.TrimSpace(newName),
+	}, "\n")
+}
+
+func formatDuplicatedPresetResult(sourceName, newName string) string {
+	return strings.Join([]string{
+		"duplicated_preset=" + strings.TrimSpace(sourceName),
+		"new_name=" + strings.TrimSpace(newName),
+	}, "\n")
+}
+
+func formatExportedPresetConfigResult(preset DatasetPreset, destinationPath string) string {
+	lines := []string{
+		"exported_preset=" + preset.Name,
+		"collection=" + preset.Collection,
+		"destination=" + strings.TrimSpace(destinationPath),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatImportedPresetConfigResult(preset DatasetPreset, sourcePath string) string {
+	lines := []string{
+		"imported_preset=" + preset.Name,
+		"collection=" + preset.Collection,
+		"source=" + strings.TrimSpace(sourcePath),
+	}
 	return strings.Join(lines, "\n")
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	studioapp "minidb-studio/internal/app"
 	"minidb-studio/internal/engine"
 )
 
@@ -72,6 +73,15 @@ func writeLegacyFrameFile(t *testing.T, path string, records []map[string]any) {
 			t.Fatalf("write legacy checksum: %v", err)
 		}
 	}
+}
+
+func sliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSetGetDelete(t *testing.T) {
@@ -603,6 +613,129 @@ func TestJSONQueryExpressionWithOR(t *testing.T) {
 	}
 }
 
+func TestJSONQueryExpressionWithGroupedPrecedence(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"score":95},"tags":["admin"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"score":88},"tags":["staff"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"score":91},"tags":["staff"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:4", `{"profile":{"score":60},"tags":["guest"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:4: %v", err)
+	}
+
+	expression, err := engine.ParseJSONQueryExpression("active=true OR (profile.score>=90 tags=staff)")
+	if err != nil {
+		t.Fatalf("parse grouped expression: %v", err)
+	}
+
+	matches := db.FindKeysByJSONExpressionInCollection("docs", "", expression)
+	want := []string{"profile:2", "profile:3", "profile:4"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected grouped-precedence matches: got=%v want=%v", matches, want)
+	}
+}
+
+func TestJSONQueryExpressionDistributesNestedORAcrossGroup(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"score":95},"tags":["admin"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"score":95},"tags":["reviewer"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"score":70},"tags":["admin"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	expression, err := engine.ParseJSONQueryExpression("(tags=admin OR tags=reviewer) active=true profile.score>=90")
+	if err != nil {
+		t.Fatalf("parse nested OR expression: %v", err)
+	}
+
+	matches := db.FindKeysByJSONExpressionInCollection("docs", "", expression)
+	want := []string{"profile:1", "profile:2"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected distributed-group matches: got=%v want=%v", matches, want)
+	}
+}
+
+func TestJSONQueryExpressionWithNOT(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"active":true,"archived":false,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"active":false,"archived":true,"profile":{"name":"Grace Hopper"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"active":true,"archived":true,"profile":{"name":"Ada Byron"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	expression, err := engine.ParseJSONQueryExpression("NOT archived=true active=true")
+	if err != nil {
+		t.Fatalf("parse NOT expression: %v", err)
+	}
+
+	matches := db.FindKeysByJSONExpressionInCollection("docs", "", expression)
+	want := []string{"profile:1"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected NOT matches: got=%v want=%v", matches, want)
+	}
+}
+
+func TestJSONQueryExpressionWithGroupedNOTAndQuotedValues(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"tags":["admin"],"archived":false,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"tags":["reviewer"],"archived":false,"profile":{"name":"Grace Hopper"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"tags":["reviewer"],"archived":true,"profile":{"name":"Grace Hopper"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	expression, err := engine.ParseJSONQueryExpression("(profile.name=\"Ada Lovelace\" OR profile.name=\"Grace Hopper\") NOT archived=true")
+	if err != nil {
+		t.Fatalf("parse grouped NOT expression: %v", err)
+	}
+
+	matches := db.FindKeysByJSONExpressionInCollection("docs", "", expression)
+	want := []string{"profile:1", "profile:2"}
+	if strings.Join(matches, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected grouped NOT matches: got=%v want=%v", matches, want)
+	}
+}
+
+func TestParseJSONQueryExpressionSupportsQuotedValues(t *testing.T) {
+	expression, err := engine.ParseJSONQueryExpression(`profile.name="Ada Lovelace" profile.bio~="local database builder"`)
+	if err != nil {
+		t.Fatalf("parse quoted expression: %v", err)
+	}
+	if len(expression) != 1 || len(expression[0]) != 2 {
+		t.Fatalf("unexpected quoted expression shape: %#v", expression)
+	}
+	if expression[0][0].Value != "Ada Lovelace" {
+		t.Fatalf("unexpected first quoted value: %q", expression[0][0].Value)
+	}
+	if expression[0][1].Value != "local database builder" {
+		t.Fatalf("unexpected second quoted value: %q", expression[0][1].Value)
+	}
+}
+
 func TestJSONFieldIndexUpdatesAcrossOverwriteDeleteAndReopen(t *testing.T) {
 	db, dir := openTestDB(t)
 
@@ -698,6 +831,49 @@ func TestFindInCommandWithOR(t *testing.T) {
 	}
 }
 
+func TestFindInCommandWithGroupedPrecedence(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"profile":{"score":95},"tags":["admin"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"profile":{"score":95},"tags":["staff"],"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:3", `{"profile":{"score":65},"tags":["guest"],"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:3: %v", err)
+	}
+
+	result, err := db.Execute("FINDIN docs active=true OR (profile.score>=90 tags=staff)")
+	if err != nil {
+		t.Fatalf("execute grouped FINDIN: %v", err)
+	}
+	if !strings.Contains(result, "2 matches") || !strings.Contains(result, "profile:2") || !strings.Contains(result, "profile:3") {
+		t.Fatalf("unexpected grouped FINDIN result: %q", result)
+	}
+}
+
+func TestFindInCommandWithNOTAndQuotedValues(t *testing.T) {
+	db, _ := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"tags":["admin"],"archived":false,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"tags":["admin"],"archived":true,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+
+	result, err := db.Execute(`FINDIN docs profile.name="Ada Lovelace" NOT archived=true`)
+	if err != nil {
+		t.Fatalf("execute NOT FINDIN: %v", err)
+	}
+	if !strings.Contains(result, "1 matches") || !strings.Contains(result, "profile:1") || strings.Contains(result, "profile:2") {
+		t.Fatalf("unexpected NOT quoted FINDIN result: %q", result)
+	}
+}
+
 func TestParseJSONQueryExpressionRejectsInvalidORSyntax(t *testing.T) {
 	_, err := engine.ParseJSONQueryExpression("OR active=true")
 	if err == nil {
@@ -712,6 +888,34 @@ func TestParseJSONQueryExpressionRejectsInvalidORSyntax(t *testing.T) {
 	_, err = engine.ParseJSONQueryExpression("active=true OR")
 	if err == nil {
 		t.Fatal("expected trailing OR to fail")
+	}
+}
+
+func TestParseJSONQueryExpressionRejectsInvalidParentheses(t *testing.T) {
+	cases := []string{
+		"active=true OR (tags=admin",
+		"active=true )",
+		"()",
+		"(OR active=true)",
+	}
+
+	for _, query := range cases {
+		if _, err := engine.ParseJSONQueryExpression(query); err == nil {
+			t.Fatalf("expected invalid query %q to fail", query)
+		}
+	}
+}
+
+func TestParseJSONQueryExpressionRejectsInvalidQuoteSyntax(t *testing.T) {
+	cases := []string{
+		`profile.name="Ada Lovelace`,
+		`profile.name="Ada"Lov elace"`,
+	}
+
+	for _, query := range cases {
+		if _, err := engine.ParseJSONQueryExpression(query); err == nil {
+			t.Fatalf("expected invalid quoted query %q to fail", query)
+		}
 	}
 }
 
@@ -750,6 +954,925 @@ func TestExportCollectionAndAll(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"collection":"users"`) || !strings.Contains(string(data), `"collection":"docs"`) {
 		t.Fatalf("unexpected export contents: %s", string(data))
+	}
+}
+
+func TestExportJSONQueryCollection(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"active":true,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"active":false,"profile":{"name":"Grace Hopper"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+
+	destination := filepath.Join(dir, "filtered.jsonl")
+	report, err := db.ExportJSONQueryCollection("docs", "active=true", destination)
+	if err != nil {
+		t.Fatalf("export filtered collection: %v", err)
+	}
+	if report.ExportedRecords != 1 || report.QueryText != "active=true" {
+		t.Fatalf("unexpected filtered export report: %#v", report)
+	}
+
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("read filtered export: %v", err)
+	}
+	if !strings.Contains(string(data), `"key":"profile:1"`) || strings.Contains(string(data), `"key":"profile:2"`) {
+		t.Fatalf("unexpected filtered export contents: %s", string(data))
+	}
+}
+
+func TestImportNDJSONSuccessAndCustomKeyField(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "docs.ndjson")
+	content := strings.Join([]string{
+		`{"doc_id":"alpha","name":"Ada Lovelace","active":true}`,
+		`{"doc_id":"beta","name":"Grace Hopper","active":false}`,
+	}, "\n")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write ndjson: %v", err)
+	}
+
+	report, err := db.ImportNDJSON("docs", sourcePath, "doc_id", engine.ImportConflictSkip, false)
+	if err != nil {
+		t.Fatalf("import ndjson: %v", err)
+	}
+	if report.ImportedRecords != 2 || report.SkippedRecords != 0 {
+		t.Fatalf("unexpected import report: %#v", report)
+	}
+
+	value, ok := db.GetFromCollection("docs", "alpha")
+	if !ok || !strings.Contains(value, `"name":"Ada Lovelace"`) {
+		t.Fatalf("unexpected imported alpha value: value=%q ok=%v", value, ok)
+	}
+}
+
+func TestImportNDJSONSkipMode(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "skip.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Incoming"}`), 0o644); err != nil {
+		t.Fatalf("write skip ndjson: %v", err)
+	}
+
+	report, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictSkip, false)
+	if err != nil {
+		t.Fatalf("import skip mode: %v", err)
+	}
+	if report.ImportedRecords != 0 || report.SkippedRecords != 1 {
+		t.Fatalf("unexpected skip report: %#v", report)
+	}
+
+	value, ok := db.GetFromCollection("docs", "alpha")
+	if !ok || !strings.Contains(value, `"name":"Existing"`) {
+		t.Fatalf("skip mode should preserve existing value: value=%q ok=%v", value, ok)
+	}
+}
+
+func TestImportNDJSONOverwriteMode(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "overwrite.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Incoming"}`), 0o644); err != nil {
+		t.Fatalf("write overwrite ndjson: %v", err)
+	}
+
+	report, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictOverwrite, false)
+	if err != nil {
+		t.Fatalf("import overwrite mode: %v", err)
+	}
+	if report.ImportedRecords != 1 || report.SkippedRecords != 0 {
+		t.Fatalf("unexpected overwrite report: %#v", report)
+	}
+
+	value, ok := db.GetFromCollection("docs", "alpha")
+	if !ok || !strings.Contains(value, `"name":"Incoming"`) {
+		t.Fatalf("overwrite mode should replace existing value: value=%q ok=%v", value, ok)
+	}
+}
+
+func TestImportNDJSONRejectsInvalidJSONLine(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "invalid.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha"`), 0o644); err != nil {
+		t.Fatalf("write invalid ndjson: %v", err)
+	}
+
+	if _, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictSkip, false); err == nil {
+		t.Fatal("expected invalid json line to fail")
+	}
+}
+
+func TestImportNDJSONRejectsMissingKeyField(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "missing-key.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"name":"Ada"}`), 0o644); err != nil {
+		t.Fatalf("write missing-key ndjson: %v", err)
+	}
+
+	if _, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictSkip, false); err == nil {
+		t.Fatal("expected missing key field to fail")
+	}
+}
+
+func TestPreviewNDJSONImportReportsDuplicatesAndConflicts(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "preview.ndjson")
+	content := strings.Join([]string{
+		`{"id":"alpha","name":"Incoming Existing"}`,
+		`{"id":"beta","name":"New Doc"}`,
+		`{"id":"beta","name":"Duplicate In File"}`,
+		`{"name":"Missing Key"}`,
+		`{"id":"gamma"`,
+	}, "\n")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write preview ndjson: %v", err)
+	}
+
+	report, err := db.PreviewNDJSONImport("docs", sourcePath, "id", engine.ImportConflictSkip)
+	if err != nil {
+		t.Fatalf("preview ndjson: %v", err)
+	}
+	if report.TotalLines != 5 {
+		t.Fatalf("unexpected total lines: %d", report.TotalLines)
+	}
+	if report.ValidDocuments != 3 {
+		t.Fatalf("unexpected valid documents: %d", report.ValidDocuments)
+	}
+	if report.InvalidLines != 1 {
+		t.Fatalf("unexpected invalid lines: %d", report.InvalidLines)
+	}
+	if report.MissingKeyCount != 1 {
+		t.Fatalf("unexpected missing key count: %d", report.MissingKeyCount)
+	}
+	if report.DuplicateKeysInFile != 1 {
+		t.Fatalf("unexpected duplicate key count: %d", report.DuplicateKeysInFile)
+	}
+	if report.ExistingKeyConflicts != 1 {
+		t.Fatalf("unexpected existing-key conflicts: %d", report.ExistingKeyConflicts)
+	}
+	if report.NewRecordCount != 2 || report.SkipCount != 1 || report.OverwriteCount != 0 {
+		t.Fatalf("unexpected change classification counts: new=%d skip=%d overwrite=%d", report.NewRecordCount, report.SkipCount, report.OverwriteCount)
+	}
+	if report.TotalDistinctFields == 0 {
+		t.Fatal("expected schema field summaries")
+	}
+	var foundNameField bool
+	for _, field := range report.FieldSummaries {
+		if field.Path == "name" {
+			foundNameField = true
+			if strings.Join(field.Types, ",") != "string" {
+				t.Fatalf("unexpected name field types: %v", field.Types)
+			}
+			break
+		}
+	}
+	if !foundNameField {
+		t.Fatalf("expected name field summary, got %#v", report.FieldSummaries)
+	}
+	var foundSkipSample bool
+	for _, sample := range report.ChangeSamples {
+		if sample.Key == "alpha" && sample.Status == "skip" {
+			foundSkipSample = true
+			if sample.CurrentPreview == "" || sample.IncomingPreview == "" {
+				t.Fatalf("expected skip sample previews, got %#v", sample)
+			}
+			break
+		}
+	}
+	if !foundSkipSample {
+		t.Fatalf("expected skip sample in preview, got %#v", report.ChangeSamples)
+	}
+}
+
+func TestPreviewNDJSONImportReportsOverwriteSamples(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing","active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "overwrite-preview.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Incoming","active":true}`), 0o644); err != nil {
+		t.Fatalf("write overwrite-preview ndjson: %v", err)
+	}
+
+	report, err := db.PreviewNDJSONImport("docs", sourcePath, "id", engine.ImportConflictOverwrite)
+	if err != nil {
+		t.Fatalf("preview overwrite ndjson: %v", err)
+	}
+	if report.NewRecordCount != 0 || report.SkipCount != 0 || report.OverwriteCount != 1 {
+		t.Fatalf("unexpected overwrite preview counts: %#v", report)
+	}
+	if len(report.ChangeSamples) != 1 || report.ChangeSamples[0].Status != "overwrite" {
+		t.Fatalf("expected one overwrite change sample, got %#v", report.ChangeSamples)
+	}
+	if report.ChangeSamples[0].CurrentPreview == report.ChangeSamples[0].IncomingPreview {
+		t.Fatalf("expected current and incoming previews to differ, got %#v", report.ChangeSamples[0])
+	}
+	if !sliceContains(report.ChangeSamples[0].ChangedFields, "active") || !sliceContains(report.ChangeSamples[0].ChangedFields, "name") {
+		t.Fatalf("expected changed field paths in overwrite sample, got %#v", report.ChangeSamples[0])
+	}
+}
+
+func TestPreviewNDJSONImportReportsAddedRemovedAndNestedFields(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing","legacy":"yes","profile":{"email":"old@example.com","score":1}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "field-diff.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Incoming","profile":{"email":"new@example.com","score":1},"active":true}`), 0o644); err != nil {
+		t.Fatalf("write field-diff ndjson: %v", err)
+	}
+
+	report, err := db.PreviewNDJSONImport("docs", sourcePath, "id", engine.ImportConflictOverwrite)
+	if err != nil {
+		t.Fatalf("preview field-diff ndjson: %v", err)
+	}
+	if len(report.ChangeSamples) != 1 {
+		t.Fatalf("expected one change sample, got %#v", report.ChangeSamples)
+	}
+
+	sample := report.ChangeSamples[0]
+	if !sliceContains(sample.AddedFields, "active") {
+		t.Fatalf("expected added field path, got %#v", sample)
+	}
+	if !sliceContains(sample.RemovedFields, "legacy") {
+		t.Fatalf("expected removed field path, got %#v", sample)
+	}
+	if !sliceContains(sample.ChangedFields, "name") {
+		t.Fatalf("expected changed scalar field path, got %#v", sample)
+	}
+	if !sliceContains(sample.ChangedFields, "profile.email") {
+		t.Fatalf("expected nested changed field path, got %#v", sample)
+	}
+}
+
+func TestImportNDJSONDryRunLeavesDatabaseUnchanged(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "dry-run.ndjson")
+	content := strings.Join([]string{
+		`{"id":"alpha","name":"Ada"}`,
+		`{"id":"beta","name":"Grace"}`,
+	}, "\n")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write dry-run ndjson: %v", err)
+	}
+
+	report, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictSkip, true)
+	if err != nil {
+		t.Fatalf("dry-run import: %v", err)
+	}
+	if !report.DryRun || report.ImportedRecords != 2 {
+		t.Fatalf("unexpected dry-run report: %#v", report)
+	}
+	if _, ok := db.GetFromCollection("docs", "alpha"); ok {
+		t.Fatal("dry-run import should not persist records")
+	}
+}
+
+func TestImportNDJSONDryRunMatchesPreviewCounts(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "alpha", `{"id":"alpha","name":"Existing"}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed existing record: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "dry-run-match.ndjson")
+	content := strings.Join([]string{
+		`{"id":"alpha","name":"Incoming Existing"}`,
+		`{"id":"beta","name":"New Doc"}`,
+	}, "\n")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write dry-run-match ndjson: %v", err)
+	}
+
+	preview, err := db.PreviewNDJSONImport("docs", sourcePath, "id", engine.ImportConflictSkip)
+	if err != nil {
+		t.Fatalf("preview dry-run-match ndjson: %v", err)
+	}
+	report, err := db.ImportNDJSON("docs", sourcePath, "id", engine.ImportConflictSkip, true)
+	if err != nil {
+		t.Fatalf("dry-run import match: %v", err)
+	}
+	if preview.NewRecordCount != report.ImportedRecords || preview.SkipCount != report.SkippedRecords {
+		t.Fatalf("dry-run should match preview counts: preview=%#v report=%#v", preview, report)
+	}
+}
+
+func TestPreviewNDJSONCommandWithQuotedPath(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "preview folder", "docs.ndjson")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir preview dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Ada Lovelace"}`), 0o644); err != nil {
+		t.Fatalf("write preview source: %v", err)
+	}
+
+	result, err := db.Execute(fmt.Sprintf(`PREVIEWNDJSON docs "%s"`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute PREVIEWNDJSON: %v", err)
+	}
+	if !strings.Contains(result, "total_lines=1") || !strings.Contains(result, "valid_documents=1") {
+		t.Fatalf("unexpected PREVIEWNDJSON result: %q", result)
+	}
+}
+
+func TestImportNDJSONDryRunCommandLeavesDatabaseUnchanged(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "dry run command.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Ada Lovelace"}`), 0o644); err != nil {
+		t.Fatalf("write dry-run command source: %v", err)
+	}
+
+	result, err := db.Execute(fmt.Sprintf(`IMPORTNDJSON docs "%s" id overwrite dry-run`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute IMPORTNDJSON dry-run: %v", err)
+	}
+	if !strings.Contains(result, "dry_run=true") || !strings.Contains(result, "imported_records=1") {
+		t.Fatalf("unexpected IMPORTNDJSON dry-run result: %q", result)
+	}
+	if _, ok := db.GetFromCollection("docs", "alpha"); ok {
+		t.Fatal("dry-run command should not persist records")
+	}
+}
+
+func TestExportQueryCommandWithQuotedArguments(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	if err := db.SetTypedInCollection("docs", "profile:1", `{"active":true,"profile":{"name":"Ada Lovelace"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "profile:2", `{"active":false,"profile":{"name":"Grace Hopper"}}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("set docs/profile:2: %v", err)
+	}
+
+	destination := filepath.Join(dir, "filtered export folder", "docs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatalf("mkdir export destination: %v", err)
+	}
+
+	result, err := db.Execute(fmt.Sprintf(`EXPORTQUERY docs "active=true" "%s"`, destination))
+	if err != nil {
+		t.Fatalf("execute EXPORTQUERY: %v", err)
+	}
+	if !strings.Contains(result, "exported_records=1") || !strings.Contains(result, "query=active=true") {
+		t.Fatalf("unexpected EXPORTQUERY result: %q", result)
+	}
+}
+
+func TestDatasetPresetStoreSaveLoadOverwriteAndDelete(t *testing.T) {
+	store := studioapp.NewDatasetPresetStore(t.TempDir())
+
+	if err := store.Save(studioapp.DatasetPreset{
+		Name:         "Docs Import",
+		Collection:   "docs",
+		KeyField:     "id",
+		ConflictMode: "overwrite",
+		QueryText:    "active=true",
+	}); err != nil {
+		t.Fatalf("save preset: %v", err)
+	}
+
+	presets, err := store.List()
+	if err != nil {
+		t.Fatalf("list presets: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Collection != "docs" {
+		t.Fatalf("unexpected saved presets: %#v", presets)
+	}
+
+	if err := store.Save(studioapp.DatasetPreset{
+		Name:         "Docs Import",
+		Collection:   "docs-v2",
+		KeyField:     "doc_id",
+		ConflictMode: "skip",
+		QueryText:    "active=false",
+	}); err != nil {
+		t.Fatalf("overwrite preset: %v", err)
+	}
+
+	presets, err = store.List()
+	if err != nil {
+		t.Fatalf("list overwritten presets: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Collection != "docs-v2" || presets[0].KeyField != "doc_id" {
+		t.Fatalf("unexpected overwritten preset values: %#v", presets)
+	}
+
+	if err := store.Delete("Docs Import"); err != nil {
+		t.Fatalf("delete preset: %v", err)
+	}
+
+	presets, err = store.List()
+	if err != nil {
+		t.Fatalf("list presets after delete: %v", err)
+	}
+	if len(presets) != 0 {
+		t.Fatalf("expected deleted presets to be empty, got %#v", presets)
+	}
+}
+
+func TestDatasetPresetStoreRejectsEmptyName(t *testing.T) {
+	store := studioapp.NewDatasetPresetStore(t.TempDir())
+	if err := store.Save(studioapp.DatasetPreset{Collection: "docs"}); err == nil {
+		t.Fatal("expected empty preset name to fail")
+	}
+}
+
+func TestPresetAwarePreviewImportAndExportCommands(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := application.SaveDatasetPreset(studioapp.DatasetPreset{
+		Name:         "Docs Workflow",
+		Collection:   "docs",
+		KeyField:     "id",
+		ConflictMode: "overwrite",
+		QueryText:    "active=true",
+	}); err != nil {
+		t.Fatalf("save dataset preset: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "preset-source.ndjson")
+	content := strings.Join([]string{
+		`{"id":"alpha","name":"Ada Lovelace","active":true}`,
+		`{"id":"beta","name":"Grace Hopper","active":false}`,
+	}, "\n")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write preset source: %v", err)
+	}
+
+	previewResult, err := application.ExecuteCommand(fmt.Sprintf(`PREVIEWPRESET "Docs Workflow" "%s"`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute PREVIEWPRESET: %v", err)
+	}
+	if !strings.Contains(previewResult, "preset=Docs Workflow") || !strings.Contains(previewResult, "valid_documents=2") {
+		t.Fatalf("unexpected PREVIEWPRESET result: %q", previewResult)
+	}
+
+	dryRunResult, err := application.ExecuteCommand(fmt.Sprintf(`IMPORTPRESET "Docs Workflow" "%s" dry-run`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute IMPORTPRESET dry-run: %v", err)
+	}
+	if !strings.Contains(dryRunResult, "dry_run=true") || !strings.Contains(dryRunResult, "imported_records=2") {
+		t.Fatalf("unexpected IMPORTPRESET dry-run result: %q", dryRunResult)
+	}
+	if _, ok := db.GetFromCollection("docs", "alpha"); ok {
+		t.Fatal("dry-run preset import should not persist records")
+	}
+
+	importResult, err := application.ExecuteCommand(fmt.Sprintf(`IMPORTPRESET "Docs Workflow" "%s"`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute IMPORTPRESET: %v", err)
+	}
+	if !strings.Contains(importResult, "dry_run=false") || !strings.Contains(importResult, "imported_records=2") {
+		t.Fatalf("unexpected IMPORTPRESET result: %q", importResult)
+	}
+
+	exportPath := filepath.Join(dir, "preset-export.jsonl")
+	exportResult, err := application.ExecuteCommand(fmt.Sprintf(`EXPORTPRESET "Docs Workflow" "%s"`, exportPath))
+	if err != nil {
+		t.Fatalf("execute EXPORTPRESET: %v", err)
+	}
+	if !strings.Contains(exportResult, "preset=Docs Workflow") || !strings.Contains(exportResult, "exported_records=1") {
+		t.Fatalf("unexpected EXPORTPRESET result: %q", exportResult)
+	}
+}
+
+func TestPresetAwareListAndShowCommands(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := application.SaveDatasetPreset(studioapp.DatasetPreset{
+		Name:         "Docs Workflow",
+		Collection:   "docs",
+		KeyField:     "id",
+		ConflictMode: "overwrite",
+		QueryText:    "active=true",
+	}); err != nil {
+		t.Fatalf("save docs preset: %v", err)
+	}
+
+	if err := application.SaveDatasetPreset(studioapp.DatasetPreset{
+		Name:         "Users Import",
+		Collection:   "users",
+		KeyField:     "user_id",
+		ConflictMode: "skip",
+	}); err != nil {
+		t.Fatalf("save users preset: %v", err)
+	}
+
+	listResult, err := application.ExecuteCommand("LISTPRESETS")
+	if err != nil {
+		t.Fatalf("execute LISTPRESETS: %v", err)
+	}
+	if !strings.Contains(listResult, "preset_count=2") || !strings.Contains(listResult, "preset=Docs Workflow") || !strings.Contains(listResult, "preset=Users Import") {
+		t.Fatalf("unexpected LISTPRESETS result: %q", listResult)
+	}
+
+	showResult, err := application.ExecuteCommand(`SHOWPRESET "Docs Workflow"`)
+	if err != nil {
+		t.Fatalf("execute SHOWPRESET: %v", err)
+	}
+	if !strings.Contains(showResult, "name=Docs Workflow") || !strings.Contains(showResult, "collection=docs") || !strings.Contains(showResult, "key_field=id") || !strings.Contains(showResult, "conflict_mode=overwrite") || !strings.Contains(showResult, "query=active=true") {
+		t.Fatalf("unexpected SHOWPRESET result: %q", showResult)
+	}
+}
+
+func TestPresetAwareSaveAndDeleteCommands(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	saveResult, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id overwrite "active=true"`)
+	if err != nil {
+		t.Fatalf("execute SAVEPRESET: %v", err)
+	}
+	if !strings.Contains(saveResult, "saved_preset=Docs Workflow") || !strings.Contains(saveResult, "collection=docs") || !strings.Contains(saveResult, "key_field=id") || !strings.Contains(saveResult, "conflict_mode=overwrite") || !strings.Contains(saveResult, "query=active=true") {
+		t.Fatalf("unexpected SAVEPRESET result: %q", saveResult)
+	}
+
+	showResult, err := application.ExecuteCommand(`SHOWPRESET "Docs Workflow"`)
+	if err != nil {
+		t.Fatalf("show saved preset: %v", err)
+	}
+	if !strings.Contains(showResult, "name=Docs Workflow") {
+		t.Fatalf("expected saved preset to exist, got %q", showResult)
+	}
+
+	overwriteResult, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs doc_id skip`)
+	if err != nil {
+		t.Fatalf("overwrite SAVEPRESET: %v", err)
+	}
+	if !strings.Contains(overwriteResult, "key_field=doc_id") || !strings.Contains(overwriteResult, "conflict_mode=skip") {
+		t.Fatalf("unexpected overwritten SAVEPRESET result: %q", overwriteResult)
+	}
+
+	deleteResult, err := application.ExecuteCommand(`DELETEPRESET "Docs Workflow"`)
+	if err != nil {
+		t.Fatalf("execute DELETEPRESET: %v", err)
+	}
+	if deleteResult != "deleted_preset=Docs Workflow" {
+		t.Fatalf("unexpected DELETEPRESET result: %q", deleteResult)
+	}
+
+	if _, err := application.ExecuteCommand(`SHOWPRESET "Docs Workflow"`); err == nil {
+		t.Fatal("expected deleted preset to be missing")
+	}
+}
+
+func TestDatasetPresetStoreRename(t *testing.T) {
+	store := studioapp.NewDatasetPresetStore(t.TempDir())
+
+	if err := store.Save(studioapp.DatasetPreset{
+		Name:         "Docs Workflow",
+		Collection:   "docs",
+		KeyField:     "id",
+		ConflictMode: "overwrite",
+		QueryText:    "active=true",
+	}); err != nil {
+		t.Fatalf("save original preset: %v", err)
+	}
+
+	if err := store.Rename("Docs Workflow", "Docs Archive"); err != nil {
+		t.Fatalf("rename preset: %v", err)
+	}
+
+	if _, err := store.Find("Docs Workflow"); err == nil {
+		t.Fatal("expected old preset name to be gone after rename")
+	}
+
+	renamed, err := store.Find("Docs Archive")
+	if err != nil {
+		t.Fatalf("find renamed preset: %v", err)
+	}
+	if renamed.Collection != "docs" || renamed.KeyField != "id" || renamed.ConflictMode != "overwrite" || renamed.QueryText != "active=true" {
+		t.Fatalf("unexpected renamed preset content: %#v", renamed)
+	}
+}
+
+func TestDatasetPresetStoreRenameRejectsConflict(t *testing.T) {
+	store := studioapp.NewDatasetPresetStore(t.TempDir())
+
+	for _, preset := range []studioapp.DatasetPreset{
+		{Name: "Docs Workflow", Collection: "docs", KeyField: "id", ConflictMode: "overwrite"},
+		{Name: "Users Workflow", Collection: "users", KeyField: "user_id", ConflictMode: "skip"},
+	} {
+		if err := store.Save(preset); err != nil {
+			t.Fatalf("save preset %q: %v", preset.Name, err)
+		}
+	}
+
+	if err := store.Rename("Docs Workflow", "Users Workflow"); err == nil {
+		t.Fatal("expected rename conflict to fail")
+	}
+}
+
+func TestDatasetPresetStoreDuplicateExportAndImport(t *testing.T) {
+	storeDir := t.TempDir()
+	store := studioapp.NewDatasetPresetStore(storeDir)
+
+	original := studioapp.DatasetPreset{
+		Name:         "Docs Workflow",
+		Collection:   "docs",
+		KeyField:     "id",
+		ConflictMode: "overwrite",
+		QueryText:    "active=true",
+	}
+	if err := store.Save(original); err != nil {
+		t.Fatalf("save original preset: %v", err)
+	}
+
+	if err := store.Duplicate("Docs Workflow", "Docs Copy"); err != nil {
+		t.Fatalf("duplicate preset: %v", err)
+	}
+
+	duplicate, err := store.Find("Docs Copy")
+	if err != nil {
+		t.Fatalf("find duplicate preset: %v", err)
+	}
+	if duplicate.Collection != original.Collection || duplicate.KeyField != original.KeyField || duplicate.QueryText != original.QueryText {
+		t.Fatalf("unexpected duplicate preset: %#v", duplicate)
+	}
+
+	exportPath := filepath.Join(storeDir, "exports", "docs-copy-preset.json")
+	exported, err := store.Export("Docs Copy", exportPath)
+	if err != nil {
+		t.Fatalf("export preset: %v", err)
+	}
+	if exported.Name != "Docs Copy" {
+		t.Fatalf("unexpected exported preset: %#v", exported)
+	}
+
+	exportedData, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read exported preset file: %v", err)
+	}
+
+	var exportedPreset studioapp.DatasetPreset
+	if err := json.Unmarshal(exportedData, &exportedPreset); err != nil {
+		t.Fatalf("decode exported preset file: %v", err)
+	}
+	if exportedPreset.Name != "Docs Copy" || exportedPreset.Collection != "docs" {
+		t.Fatalf("unexpected exported preset file contents: %#v", exportedPreset)
+	}
+
+	if err := store.Delete("Docs Copy"); err != nil {
+		t.Fatalf("delete exported preset before import: %v", err)
+	}
+
+	imported, err := store.Import(exportPath)
+	if err != nil {
+		t.Fatalf("import preset file: %v", err)
+	}
+	if imported.Name != "Docs Copy" || imported.KeyField != "id" || imported.ConflictMode != "overwrite" {
+		t.Fatalf("unexpected imported preset: %#v", imported)
+	}
+}
+
+func TestPresetAwareRenameCommand(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id overwrite "active=true"`); err != nil {
+		t.Fatalf("seed SAVEPRESET: %v", err)
+	}
+
+	renameResult, err := application.ExecuteCommand(`RENAMEDPRESET "Docs Workflow" "Docs Archive"`)
+	if err != nil {
+		t.Fatalf("execute RENAMEDPRESET: %v", err)
+	}
+	if !strings.Contains(renameResult, "renamed_preset=Docs Workflow") || !strings.Contains(renameResult, "new_name=Docs Archive") {
+		t.Fatalf("unexpected RENAMEDPRESET result: %q", renameResult)
+	}
+
+	if _, err := application.ExecuteCommand(`SHOWPRESET "Docs Workflow"`); err == nil {
+		t.Fatal("expected old preset name to be missing after rename")
+	}
+
+	showResult, err := application.ExecuteCommand(`SHOWPRESET "Docs Archive"`)
+	if err != nil {
+		t.Fatalf("show renamed preset: %v", err)
+	}
+	if !strings.Contains(showResult, "name=Docs Archive") || !strings.Contains(showResult, "query=active=true") {
+		t.Fatalf("unexpected renamed preset details: %q", showResult)
+	}
+}
+
+func TestPresetAwareDuplicateExportAndImportCommands(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id overwrite "active=true"`); err != nil {
+		t.Fatalf("seed docs workflow preset: %v", err)
+	}
+
+	duplicateResult, err := application.ExecuteCommand(`DUPLICATEPRESET "Docs Workflow" "Docs Copy"`)
+	if err != nil {
+		t.Fatalf("execute DUPLICATEPRESET: %v", err)
+	}
+	if !strings.Contains(duplicateResult, "duplicated_preset=Docs Workflow") || !strings.Contains(duplicateResult, "new_name=Docs Copy") {
+		t.Fatalf("unexpected DUPLICATEPRESET result: %q", duplicateResult)
+	}
+
+	exportPath := filepath.Join(dir, "preset exports", "docs-copy.json")
+	exportResult, err := application.ExecuteCommand(fmt.Sprintf(`EXPORTPRESETCONFIG "Docs Copy" "%s"`, exportPath))
+	if err != nil {
+		t.Fatalf("execute EXPORTPRESETCONFIG: %v", err)
+	}
+	if !strings.Contains(exportResult, "exported_preset=Docs Copy") || !strings.Contains(exportResult, "destination="+exportPath) {
+		t.Fatalf("unexpected EXPORTPRESETCONFIG result: %q", exportResult)
+	}
+
+	if _, err := application.ExecuteCommand(`DELETEPRESET "Docs Copy"`); err != nil {
+		t.Fatalf("delete preset before import: %v", err)
+	}
+
+	importResult, err := application.ExecuteCommand(fmt.Sprintf(`IMPORTPRESETCONFIG "%s"`, exportPath))
+	if err != nil {
+		t.Fatalf("execute IMPORTPRESETCONFIG: %v", err)
+	}
+	if !strings.Contains(importResult, "imported_preset=Docs Copy") || !strings.Contains(importResult, "source="+exportPath) {
+		t.Fatalf("unexpected IMPORTPRESETCONFIG result: %q", importResult)
+	}
+
+	showResult, err := application.ExecuteCommand(`SHOWPRESET "Docs Copy"`)
+	if err != nil {
+		t.Fatalf("show imported preset: %v", err)
+	}
+	if !strings.Contains(showResult, "name=Docs Copy") || !strings.Contains(showResult, "query=active=true") {
+		t.Fatalf("unexpected imported preset details: %q", showResult)
+	}
+}
+
+func TestPresetAwareCommandMissingPresetFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	sourcePath := filepath.Join(dir, "missing-preset.ndjson")
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Ada"}`), 0o644); err != nil {
+		t.Fatalf("write missing-preset source: %v", err)
+	}
+
+	if _, err := application.ExecuteCommand(fmt.Sprintf(`PREVIEWPRESET "Missing Preset" "%s"`, sourcePath)); err == nil {
+		t.Fatal("expected missing preset command to fail")
+	}
+}
+
+func TestShowPresetCommandMissingPresetFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SHOWPRESET "Missing Preset"`); err == nil {
+		t.Fatal("expected SHOWPRESET missing preset to fail")
+	}
+}
+
+func TestRenamePresetCommandMissingPresetFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`RENAMEDPRESET "Missing Preset" "Docs Archive"`); err == nil {
+		t.Fatal("expected RENAMEDPRESET missing preset to fail")
+	}
+}
+
+func TestRenamePresetCommandConflictFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id overwrite`); err != nil {
+		t.Fatalf("seed docs preset: %v", err)
+	}
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Users Workflow" users user_id skip`); err != nil {
+		t.Fatalf("seed users preset: %v", err)
+	}
+
+	if _, err := application.ExecuteCommand(`RENAMEDPRESET "Docs Workflow" "Users Workflow"`); err == nil {
+		t.Fatal("expected rename conflict to fail")
+	}
+}
+
+func TestDuplicatePresetCommandConflictFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id overwrite`); err != nil {
+		t.Fatalf("seed docs preset: %v", err)
+	}
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Copy" docs id overwrite`); err != nil {
+		t.Fatalf("seed docs copy preset: %v", err)
+	}
+
+	if _, err := application.ExecuteCommand(`DUPLICATEPRESET "Docs Workflow" "Docs Copy"`); err == nil {
+		t.Fatal("expected duplicate conflict to fail")
+	}
+}
+
+func TestImportPresetConfigCommandInvalidFileFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	invalidPath := filepath.Join(dir, "invalid-preset.json")
+	if err := os.WriteFile(invalidPath, []byte(`{"name":"Broken"}`), 0o644); err != nil {
+		t.Fatalf("write invalid preset file: %v", err)
+	}
+
+	if _, err := application.ExecuteCommand(fmt.Sprintf(`IMPORTPRESETCONFIG "%s"`, invalidPath)); err == nil {
+		t.Fatal("expected invalid preset file to fail")
+	}
+}
+
+func TestSavePresetCommandValidationFails(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if _, err := application.ExecuteCommand(`SAVEPRESET "Docs Workflow" docs id merge`); err == nil {
+		t.Fatal("expected invalid conflict mode to fail")
+	}
+}
+
+func TestImportNDJSONCommandWithQuotedPath(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	sourcePath := filepath.Join(dir, "folder with spaces", "docs.ndjson")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir import dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(`{"id":"alpha","name":"Ada Lovelace"}`), 0o644); err != nil {
+		t.Fatalf("write quoted-path ndjson: %v", err)
+	}
+
+	result, err := db.Execute(fmt.Sprintf(`IMPORTNDJSON docs "%s"`, sourcePath))
+	if err != nil {
+		t.Fatalf("execute IMPORTNDJSON: %v", err)
+	}
+	if !strings.Contains(result, "imported_records=1") || !strings.Contains(result, "skipped_records=0") {
+		t.Fatalf("unexpected IMPORTNDJSON result: %q", result)
 	}
 }
 

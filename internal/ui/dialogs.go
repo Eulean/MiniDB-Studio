@@ -40,26 +40,30 @@ func showRecordEditorDialog(
 	valueEntry.SetMinRowsVisible(12)
 	valueEntry.SetText(initialValue)
 
-	form := container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel("Collection"),
-			collectionEntry,
-			widget.NewSeparator(),
-			widget.NewLabel("Key"),
-			keyEntry,
-			widget.NewSeparator(),
-			widget.NewLabel("Value Kind"),
-			valueKindSelect,
-			widget.NewSeparator(),
-			widget.NewLabel("Value"),
+	form := sectionCard(
+		title,
+		"Create or update one record using either raw text or validated JSON.",
+		container.NewBorder(
+			container.NewVBox(
+				widget.NewLabel("Collection"),
+				collectionEntry,
+				widget.NewSeparator(),
+				widget.NewLabel("Key"),
+				keyEntry,
+				widget.NewSeparator(),
+				widget.NewLabel("Value Kind"),
+				valueKindSelect,
+				widget.NewSeparator(),
+				widget.NewLabel("Value"),
+			),
+			nil,
+			nil,
+			nil,
+			valueEntry,
 		),
-		nil,
-		nil,
-		nil,
-		valueEntry,
 	)
 
-	editorDialog := dialog.NewCustomConfirm(title, "Save", "Cancel", form, func(confirmed bool) {
+	editorDialog := dialog.NewCustomConfirm(title, "Save", "Cancel", standardScroll(form), func(confirmed bool) {
 		if !confirmed {
 			return
 		}
@@ -82,7 +86,7 @@ func showRecordEditorDialog(
 		}
 	}, window)
 
-	editorDialog.Resize(fyne.NewSize(520, 420))
+	editorDialog.Resize(fyne.NewSize(720, 560))
 	editorDialog.Show()
 }
 

@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v3.7:
+This repository now targets MiniDB v7.0:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -23,7 +23,24 @@ This repository now targets MiniDB v3.7:
 - multi-condition JSON document queries
 - string contains and numeric comparison operators
 - array membership queries for scalar arrays
-- boolean OR query composition
+- boolean OR query composition with grouped parentheses
+- logical NOT support for JSON queries
+- quoted JSON query values with spaces
+- NDJSON document import workflows
+- NDJSON import preview and dry-run support
+- schema-aware dataset preview field summaries
+- filtered JSON export by query expression
+- change-aware import review with overwrite samples
+- field-level overwrite diff hints for import review
+- saved dataset presets for repeated preview/import/export workflows
+- preset-aware console commands for dataset workflows
+- console preset inspection commands for listing and viewing saved workflows
+- console preset management commands for saving and deleting workflows
+- console preset rename commands for completing workflow lifecycle management
+- portable preset commands for duplication and JSON config import/export
+- cleaner, more modern, and more resizable native desktop layouts
+- custom desktop theme and polished workflow dialogs
+- stronger in-app overview and operator guidance
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database.
@@ -98,6 +115,7 @@ minidb-studio/
       compact.go
       db.go
       export.go
+      import.go
       indexes.go
       json_index.go
       lock.go
@@ -247,6 +265,25 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `FINDIN collection path=value [path=value ...]`
 - `FINDIN collection path>=value [path~=value ...]`
 - `FINDIN collection cond cond OR cond cond`
+- `FINDIN collection active=true OR (profile.score>=90 tags=admin)`
+- `FINDIN collection (tags=admin OR tags=reviewer) NOT archived=true`
+- `FINDIN collection profile.name="Ada Lovelace"`
+- `IMPORTNDJSON collection "C:\path\file.ndjson"`
+- `PREVIEWNDJSON collection "C:\path\file.ndjson"`
+- `IMPORTNDJSON collection "C:\path\file.ndjson" id overwrite dry-run`
+- `IMPORTNDJSON collection "C:\path\file.ndjson" id overwrite`
+- `EXPORTQUERY collection "active=true" "C:\path\filtered.jsonl"`
+- `PREVIEWPRESET "Docs Workflow" "C:\path\file.ndjson"`
+- `SAVEPRESET "Docs Workflow" docs id overwrite "active=true"`
+- `LISTPRESETS`
+- `SHOWPRESET "Docs Workflow"`
+- `DUPLICATEPRESET "Docs Workflow" "Docs Copy"`
+- `RENAMEDPRESET "Docs Workflow" "Docs Archive"`
+- `EXPORTPRESETCONFIG "Docs Archive" "C:\path\docs-archive-preset.json"`
+- `IMPORTPRESETCONFIG "C:\path\docs-archive-preset.json"`
+- `IMPORTPRESET "Docs Workflow" "C:\path\file.ndjson" dry-run`
+- `EXPORTPRESET "Docs Workflow" "C:\path\filtered.jsonl"`
+- `DELETEPRESET "Docs Workflow"`
 - `STATS`
 - `COMPACT`
 - `SNAPSHOT`
@@ -297,6 +334,9 @@ END
 - repair into a fresh destination
 - compact database
 - export one collection or the full database
+- import NDJSON documents into a chosen collection
+- preview NDJSON imports before writing
+- export only the JSON documents matching a query
 - create backup archive
 - open data folder
 
@@ -395,7 +435,7 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - old `MDB1` local data is migrated into the current storage format
 - stale `minidb.lock` files are cleaned up when the owning PID is no longer alive
 
-## Implemented V3.7 Features
+## Implemented V7.0 Features
 
 - single-process lock file protection
 - snapshot create/load path
@@ -425,7 +465,34 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - numeric comparisons through `>`, `>=`, `<`, and `<=`
 - scalar array membership queries through the existing equality syntax
 - boolean OR composition across condition groups
-- Explorer JSON query expressions share the same OR parser as the console
+- logical NOT on conditions and grouped expressions
+- quoted JSON query values so spaces can be matched safely
+- Explorer JSON query expressions share the same grouped OR/AND/NOT parser as the console
+- NDJSON import with `skip` or `overwrite` conflict handling
+- Maintenance import workflow with file picker, key field, and conflict mode controls
+- NDJSON preview reports with duplicate/conflict/invalid-line accounting
+- dry-run import validation that leaves the database unchanged
+- schema-aware field summaries with observed path/type hints during preview
+- filtered JSON export through query expressions in both console and Maintenance
+- import preview classification for new, overwrite, and skip outcomes
+- compact current/incoming preview samples before confirming overwrite-capable imports
+- field-level added, removed, and changed path hints for overwrite candidates
+- nested JSON path change detection inside overwrite review samples
+- saved workflow presets for collection/key-field/conflict/query combinations
+- maintenance dialogs can load, save, and delete dataset presets
+- preset-aware console commands that resolve saved dataset workflows by name
+- `LISTPRESETS` to inspect available saved workflows from the console
+- `SHOWPRESET "Name"` to inspect one preset's collection, key field, conflict mode, and query
+- `SAVEPRESET "Name" collection key_field conflict_mode ["query"]` to create or overwrite workflows from the console
+- `DELETEPRESET "Name"` to remove workflows from the console
+- `RENAMEDPRESET "Old Name" "New Name"` to rename workflows without changing their saved fields
+- `DUPLICATEPRESET "Source" "Copy"` to clone one saved workflow under a new name
+- `EXPORTPRESETCONFIG "Name" "C:\path\preset.json"` to export one workflow as portable JSON
+- `IMPORTPRESETCONFIG "C:\path\preset.json"` to import one workflow JSON file into local preset storage
+- custom Fyne theme with cleaner colors, spacing, and sizing
+- stronger card-based shell, footer status cards, and resizable page layouts
+- larger scroll-safe editor and maintenance workflow dialogs
+- richer About/overview page with workflow guidance and command families
 
 ## Current Limitations
 
@@ -441,17 +508,20 @@ MiniDB Studio now also tries to recover common local-startup issues automaticall
 - no secondary indexes
 - no query planner or schema system
 - no regex JSON queries yet
-- no parentheses / grouped precedence yet
-- no NOT queries yet
 - no field-level or secondary indexes beyond equality indexes and per-collection sorted key slices
 - no interactive merge resolution during repair
+- no nested key-field extraction during NDJSON import
+- no full visual side-by-side diff viewer before overwrite imports
+- no preset sync across machines or users
+- no preset-aware autocomplete in the console yet
+- no streaming background import progress UI
 - no scheduled background maintenance worker yet
 
-## Roadmap After V3.7
+## Roadmap After V7.0
 
 - configurable automatic snapshot/compaction policies
 - stronger lock stale-state recovery
 - richer validation / repair tooling
 - optional collection namespaces
-- deeper document-oriented helpers and grouped boolean query precedence
-- import tooling and richer non-SQL query workflows
+- deeper document-oriented helpers and wildcard query workflows
+- richer visual diffs, schema suggestions, and non-SQL dataset workflows

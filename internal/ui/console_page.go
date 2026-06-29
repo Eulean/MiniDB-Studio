@@ -28,7 +28,7 @@ func NewConsolePage(window fyne.Window, application *studioapp.Application, onSt
 	}
 
 	page.commandInput = widget.NewMultiLineEntry()
-	page.commandInput.SetPlaceHolder("Examples:\nSET customer:1 Alice Smith\nSETIN users 42 Alice Smith\nSETJSON docs profile {\"profile\":{\"email\":\"ada@example.com\",\"score\":95},\"tags\":[\"admin\"],\"active\":true}\nFINDIN docs profile.email=ada@example.com active=true\nFINDIN docs active=true OR profile.score>=90\nFINDIN docs profile.bio~=local OR tags=admin\nCOLLECTIONS\nKEYSIN users user:\nSTATS")
+	page.commandInput.SetPlaceHolder("Examples:\nSET customer:1 Alice Smith\nSETIN users 42 Alice Smith\nSETJSON docs profile {\"profile\":{\"email\":\"ada@example.com\",\"score\":95},\"tags\":[\"admin\"],\"active\":true}\nFINDIN docs profile.email=ada@example.com active=true\nFINDIN docs active=true OR (profile.score>=90 tags=admin)\nFINDIN docs (tags=admin OR tags=reviewer) NOT archived=true\nFINDIN docs profile.name=\"Ada Lovelace\"\nSAVEPRESET \"Docs Workflow\" docs id overwrite \"active=true\"\nLISTPRESETS\nSHOWPRESET \"Docs Workflow\"\nDUPLICATEPRESET \"Docs Workflow\" \"Docs Copy\"\nRENAMEDPRESET \"Docs Copy\" \"Docs Archive\"\nEXPORTPRESETCONFIG \"Docs Archive\" \"C:\\data\\docs-archive-preset.json\"\nIMPORTPRESETCONFIG \"C:\\data\\docs-archive-preset.json\"\nPREVIEWNDJSON docs \"C:\\data\\docs.ndjson\"\nPREVIEWPRESET \"Docs Archive\" \"C:\\data\\docs.ndjson\"\nIMPORTPRESET \"Docs Archive\" \"C:\\data\\docs.ndjson\" dry-run\nIMPORTNDJSON docs \"C:\\data\\docs.ndjson\" id overwrite\nEXPORTQUERY docs \"active=true\" \"C:\\data\\active-docs.jsonl\"\nEXPORTPRESET \"Docs Archive\" \"C:\\data\\active-docs.jsonl\"\nDELETEPRESET \"Docs Archive\"\nCOLLECTIONS\nKEYSIN users user:\nSTATS")
 	page.commandInput.Wrapping = fyne.TextWrapWord
 	page.commandInput.SetMinRowsVisible(8)
 
@@ -51,19 +51,22 @@ func NewConsolePage(window fyne.Window, application *studioapp.Application, onSt
 	page.historyOutput.Wrapping = fyne.TextWrapOff
 	page.historyOutput.TextStyle = fyne.TextStyle{Monospace: true}
 
-	page.root = container.NewBorder(
+	inputCard := sectionCard(
+		"Command Input",
+		"Run one command at a time with readable, durable feedback for MiniDB operations.",
 		container.NewVBox(
-			widget.NewLabelWithStyle("Command Input", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			page.commandInput,
-			runButton,
-			widget.NewSeparator(),
-			widget.NewLabelWithStyle("Output and History", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			container.NewHBox(layoutSpacer(), runButton),
 		),
-		nil,
-		nil,
-		nil,
+	)
+
+	outputCard := sectionCard(
+		"Output And History",
+		"Console history is kept in-app so recent commands and results stay easy to review.",
 		container.NewVScroll(page.historyOutput),
 	)
+
+	page.root = standardScroll(container.NewBorder(inputCard, nil, nil, nil, outputCard))
 
 	page.Refresh()
 	return page

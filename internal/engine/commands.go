@@ -441,7 +441,9 @@ func (db *DB) findKeysByJSONConditionsLocked(collection, prefix string, conditio
 			return []string{}
 		}
 
-		if condition.Operator == "" || condition.Operator == "=" {
+		// Only positive equality predicates can seed from the precomputed field index.
+		// Negated and non-equality predicates still reuse the same final record evaluator.
+		if !condition.Negated && (condition.Operator == "" || condition.Operator == "=") {
 			keys := collectionIndex[path][condition.Value]
 			if len(keys) == 0 {
 				return []string{}
@@ -509,9 +511,6 @@ func (db *DB) findKeysByJSONExpressionLocked(collection, prefix string, expressi
 func recordMatchesJSONConditions(entry indexEntry, conditions []JSONQueryCondition) bool {
 	for _, condition := range conditions {
 		values := entry.JSONFields[strings.TrimSpace(condition.Path)]
-		if len(values) == 0 {
-			return false
-		}
 		if !evaluateJSONCondition(values, condition) {
 			return false
 		}
@@ -775,6 +774,36 @@ func (db *DB) Execute(input string) (string, error) {
 			return "", err
 		}
 		return formatExport(report), nil
+	case strings.HasPrefix(upper, "EXPORTQUERY "):
+		collection, queryText, destinationPath, err := parseExportQueryCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		report, err := db.ExportJSONQueryCollection(collection, queryText, destinationPath)
+		if err != nil {
+			return "", err
+		}
+		return formatExport(report), nil
+	case strings.HasPrefix(upper, "IMPORTNDJSON "):
+		collection, sourcePath, keyField, conflictMode, dryRun, err := parseImportNDJSONCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		report, err := db.ImportNDJSON(collection, sourcePath, keyField, conflictMode, dryRun)
+		if err != nil {
+			return "", err
+		}
+		return formatImport(report), nil
+	case strings.HasPrefix(upper, "PREVIEWNDJSON "):
+		collection, sourcePath, keyField, conflictMode, err := parsePreviewNDJSONCommand(commandText)
+		if err != nil {
+			return "", err
+		}
+		report, err := db.PreviewNDJSONImport(collection, sourcePath, keyField, conflictMode)
+		if err != nil {
+			return "", err
+		}
+		return formatImportPreview(report), nil
 	case strings.HasPrefix(upper, "BATCH"):
 		operations, err := parseBatchCommand(commandText)
 		if err != nil {
@@ -889,6 +918,134 @@ func parseFindInCommand(commandText string) (string, JSONQueryExpression, error)
 	}
 
 	return collection, expression, nil
+}
+
+func parseImportNDJSONCommand(commandText string) (string, string, string, string, bool, error) {
+	rest := strings.TrimSpace(commandText[len("IMPORTNDJSON"):])
+	args, err := tokenizeCommandArguments(rest)
+	if err != nil {
+		return "", "", "", "", false, err
+	}
+	if len(args) < 2 || len(args) > 5 {
+		return "", "", "", "", false, fmt.Errorf("IMPORTNDJSON requires collection, path, optional key field, optional conflict mode, and optional dry-run")
+	}
+
+	collection := strings.TrimSpace(args[0])
+	if err := validateCollection(collection); err != nil {
+		return "", "", "", "", false, err
+	}
+
+	sourcePath := strings.TrimSpace(args[1])
+	if sourcePath == "" {
+		return "", "", "", "", false, fmt.Errorf("IMPORTNDJSON source path must not be empty")
+	}
+
+	keyField := ""
+	conflictMode := ""
+	dryRun := false
+	if len(args) >= 3 {
+		thirdArg := strings.TrimSpace(args[2])
+		switch {
+		case strings.EqualFold(thirdArg, "dry-run"):
+			dryRun = true
+		case isImportConflictModeToken(thirdArg):
+			conflictMode = thirdArg
+		default:
+			keyField = thirdArg
+		}
+	}
+	if len(args) == 4 {
+		fourthArg := strings.TrimSpace(args[3])
+		switch {
+		case strings.EqualFold(fourthArg, "dry-run"):
+			dryRun = true
+		case isImportConflictModeToken(fourthArg):
+			conflictMode = fourthArg
+		case keyField == "":
+			keyField = fourthArg
+		default:
+			return "", "", "", "", false, fmt.Errorf("unexpected IMPORTNDJSON argument %q", fourthArg)
+		}
+	}
+	if len(args) == 5 {
+		fifthArg := strings.TrimSpace(args[4])
+		if !strings.EqualFold(fifthArg, "dry-run") {
+			return "", "", "", "", false, fmt.Errorf("unexpected IMPORTNDJSON argument %q", fifthArg)
+		}
+		dryRun = true
+	}
+
+	if normalizedMode, err := normalizeImportConflictMode(conflictMode); err == nil {
+		conflictMode = normalizedMode
+	} else if conflictMode != "" {
+		return "", "", "", "", false, err
+	}
+
+	return collection, sourcePath, keyField, conflictMode, dryRun, nil
+}
+
+func parsePreviewNDJSONCommand(commandText string) (string, string, string, string, error) {
+	rest := strings.TrimSpace(commandText[len("PREVIEWNDJSON"):])
+	args, err := tokenizeCommandArguments(rest)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if len(args) < 2 || len(args) > 4 {
+		return "", "", "", "", fmt.Errorf("PREVIEWNDJSON requires collection, path, and optional key field plus conflict mode")
+	}
+
+	collection := strings.TrimSpace(args[0])
+	if err := validateCollection(collection); err != nil {
+		return "", "", "", "", err
+	}
+
+	sourcePath := strings.TrimSpace(args[1])
+	if sourcePath == "" {
+		return "", "", "", "", fmt.Errorf("PREVIEWNDJSON source path must not be empty")
+	}
+
+	keyField := ""
+	conflictMode := ""
+	if len(args) >= 3 {
+		thirdArg := strings.TrimSpace(args[2])
+		if isImportConflictModeToken(thirdArg) {
+			conflictMode = thirdArg
+		} else {
+			keyField = thirdArg
+		}
+	}
+	if len(args) == 4 {
+		conflictMode = strings.TrimSpace(args[3])
+	}
+
+	if normalizedMode, err := normalizeImportConflictMode(conflictMode); err == nil {
+		conflictMode = normalizedMode
+	} else if conflictMode != "" {
+		return "", "", "", "", err
+	}
+
+	return collection, sourcePath, keyField, conflictMode, nil
+}
+
+func parseExportQueryCommand(commandText string) (string, string, string, error) {
+	rest := strings.TrimSpace(commandText[len("EXPORTQUERY"):])
+	args, err := tokenizeCommandArguments(rest)
+	if err != nil {
+		return "", "", "", err
+	}
+	if len(args) != 3 {
+		return "", "", "", fmt.Errorf("EXPORTQUERY requires collection, query text, and destination path")
+	}
+	if err := validateCollection(strings.TrimSpace(args[0])); err != nil {
+		return "", "", "", err
+	}
+	if strings.TrimSpace(args[1]) == "" {
+		return "", "", "", fmt.Errorf("EXPORTQUERY query text must not be empty")
+	}
+	if strings.TrimSpace(args[2]) == "" {
+		return "", "", "", fmt.Errorf("EXPORTQUERY destination path must not be empty")
+	}
+	return strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), strings.TrimSpace(args[2]), nil
 }
 
 func parseBatchCommand(commandText string) ([]BatchOperation, error) {
@@ -1011,11 +1168,15 @@ func formatValidation(report ValidationReport) string {
 }
 
 func formatExport(report ExportReport) string {
-	return strings.Join([]string{
+	lines := []string{
 		"destination=" + report.DestinationPath,
 		"collection=" + report.Collection,
 		"exported_records=" + strconv.Itoa(report.ExportedRecords),
-	}, "\n")
+	}
+	if strings.TrimSpace(report.QueryText) != "" {
+		lines = append(lines, "query="+report.QueryText)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatRepair(report RepairReport) string {
@@ -1030,6 +1191,38 @@ func formatRepair(report RepairReport) string {
 	return strings.Join(lines, "\n")
 }
 
+func formatImport(report ImportReport) string {
+	return strings.Join([]string{
+		"source=" + report.SourcePath,
+		"collection=" + report.Collection,
+		"key_field=" + report.KeyField,
+		"conflict_mode=" + report.ConflictMode,
+		"dry_run=" + strconv.FormatBool(report.DryRun),
+		"imported_records=" + strconv.Itoa(report.ImportedRecords),
+		"skipped_records=" + strconv.Itoa(report.SkippedRecords),
+	}, "\n")
+}
+
+func formatImportPreview(report ImportPreviewReport) string {
+	lines := []string{
+		"source=" + report.SourcePath,
+		"collection=" + report.Collection,
+		"key_field=" + report.KeyField,
+		"conflict_mode=" + report.ConflictMode,
+		"total_lines=" + strconv.Itoa(report.TotalLines),
+		"valid_documents=" + strconv.Itoa(report.ValidDocuments),
+		"invalid_lines=" + strconv.Itoa(report.InvalidLines),
+		"missing_key_count=" + strconv.Itoa(report.MissingKeyCount),
+		"duplicate_keys_in_file=" + strconv.Itoa(report.DuplicateKeysInFile),
+		"existing_key_conflicts=" + strconv.Itoa(report.ExistingKeyConflicts),
+		"sample_keys=" + strings.Join(report.SampleKeys, ","),
+	}
+	if len(report.FirstProblems) > 0 {
+		lines = append(lines, "problems="+strings.Join(report.FirstProblems, " | "))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func valuePreview(value string) string {
 	flat := strings.ReplaceAll(value, "\r\n", "\n")
 	flat = strings.ReplaceAll(flat, "\n", "\\n")
@@ -1038,4 +1231,65 @@ func valuePreview(value string) string {
 	}
 
 	return flat[:80] + "..."
+}
+
+// tokenizeCommandArguments splits command arguments while preserving quoted Windows paths.
+// Quotes are removed manually so normal backslashes like C:\data\file.ndjson stay intact.
+func tokenizeCommandArguments(input string) ([]string, error) {
+	tokens := make([]string, 0, 4)
+	var current strings.Builder
+	inQuotes := false
+	escaping := false
+
+	flushCurrent := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+
+	for _, r := range input {
+		switch {
+		case escaping:
+			current.WriteRune(r)
+			escaping = false
+		case r == '\\' && inQuotes:
+			current.WriteRune(r)
+			escaping = true
+		case r == '"':
+			current.WriteRune(r)
+			inQuotes = !inQuotes
+		case inQuotes:
+			current.WriteRune(r)
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flushCurrent()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escaping {
+		return nil, fmt.Errorf("invalid command arguments: unterminated escape sequence")
+	}
+	if inQuotes {
+		return nil, fmt.Errorf("invalid command arguments: missing closing quote")
+	}
+
+	flushCurrent()
+	for index, token := range tokens {
+		if strings.HasPrefix(token, "\"") && strings.HasSuffix(token, "\"") && len(token) >= 2 {
+			inner := token[1 : len(token)-1]
+			inner = strings.ReplaceAll(inner, `\"`, `"`)
+			inner = strings.ReplaceAll(inner, `\\`, `\`)
+			tokens[index] = inner
+		}
+	}
+
+	return tokens, nil
+}
+
+func isImportConflictModeToken(value string) bool {
+	_, err := normalizeImportConflictMode(value)
+	return err == nil
 }

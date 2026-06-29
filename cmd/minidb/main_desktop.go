@@ -17,6 +17,7 @@ import (
 // main opens the database-backed application and starts the native Fyne desktop window.
 func main() {
 	fyneApplication := fyneapp.NewWithID("com.minidb.studio")
+	fyneApplication.Settings().SetTheme(ui.NewStudioTheme())
 
 	application, err := studioapp.NewApplication()
 	if err != nil {

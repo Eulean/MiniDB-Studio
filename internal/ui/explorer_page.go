@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -58,7 +59,7 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		page.Refresh()
 	}
 	page.queryEntry = widget.NewEntry()
-	page.queryEntry.SetPlaceHolder("JSON query: active=true OR profile.score>=90")
+	page.queryEntry.SetPlaceHolder("JSON query: (tags=admin OR tags=reviewer) NOT archived=true")
 	page.queryEntry.OnChanged = func(string) {
 		page.currentPage = 0
 		page.Refresh()
@@ -166,13 +167,8 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 		widget.NewLabelWithStyle("Updated", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
 
-	toolbar := container.NewHBox(
-		widget.NewLabel("Collection"),
-		page.collectionSelect,
-		page.filterEntry,
-		page.queryEntry,
-		page.pageLabel,
-		layout.NewSpacer(),
+	pageNavigationRow := container.NewHBox(
+		widget.NewIcon(theme.NavigateBackIcon()),
 		widget.NewButton("Previous", func() {
 			if page.currentPage > 0 {
 				page.currentPage--
@@ -189,18 +185,31 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 				page.Refresh()
 			}
 		}),
+		page.pageLabel,
+		layout.NewSpacer(),
 		refreshButton,
 		createButton,
 		page.editButton,
 		page.deleteButton,
 	)
 
-	leftPanel := container.NewBorder(
-		container.NewVBox(toolbar, widget.NewSeparator(), tableHeader),
-		nil,
-		nil,
-		nil,
-		container.NewVScroll(page.table),
+	filtersRow := container.NewGridWithColumns(
+		3,
+		container.NewVBox(widget.NewLabel("Collection"), page.collectionSelect),
+		container.NewVBox(widget.NewLabel("Key Prefix"), page.filterEntry),
+		container.NewVBox(widget.NewLabel("JSON Query"), page.queryEntry),
+	)
+
+	leftPanel := sectionCard(
+		"Data Explorer",
+		"Filter by collection, key prefix, or JSON query and inspect live records without leaving the desktop app.",
+		container.NewBorder(
+			container.NewVBox(filtersRow, widget.NewSeparator(), pageNavigationRow, widget.NewSeparator(), tableHeader),
+			nil,
+			nil,
+			nil,
+			container.NewVScroll(page.table),
+		),
 	)
 
 	page.detailKey = widget.NewLabel("No record selected")
@@ -210,21 +219,25 @@ func NewExplorerPage(window fyne.Window, application *studioapp.Application, onS
 	page.detailValue.Wrapping = fyne.TextWrapWord
 	page.detailValue.SetMinRowsVisible(14)
 
-	rightPanel := container.NewVBox(
-		widget.NewLabelWithStyle("Record Details", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Selected Key"),
-		page.detailKey,
-		widget.NewLabel("Metadata"),
-		page.detailMeta,
-		widget.NewSeparator(),
-		widget.NewLabel("Full Value"),
-		page.detailValue,
+	rightPanel := sectionCard(
+		"Record Details",
+		"Review metadata and full values for the current selection.",
+		container.NewVBox(
+			widget.NewLabel("Selected Key"),
+			page.detailKey,
+			widget.NewSeparator(),
+			widget.NewLabel("Metadata"),
+			page.detailMeta,
+			widget.NewSeparator(),
+			widget.NewLabel("Full Value"),
+			page.detailValue,
+		),
 	)
 
 	split := container.NewHSplit(leftPanel, rightPanel)
-	split.Offset = 0.68
+	split.Offset = 0.7
 
-	page.root = container.NewBorder(nil, nil, nil, nil, split)
+	page.root = standardScroll(split)
 	page.collectionSelect.SetSelected(engine.DefaultCollection)
 	return page
 }

@@ -90,71 +90,328 @@ func ParseJSONQueryConditions(queryText string) ([]JSONQueryCondition, error) {
 		return nil, nil
 	}
 
-	parts := strings.Fields(queryText)
+	parts, err := tokenizeJSONQuery(queryText)
+	if err != nil {
+		return nil, err
+	}
+
 	conditions := make([]JSONQueryCondition, 0, len(parts))
 	for _, part := range parts {
-		path, operator, value, err := splitJSONQueryCondition(part)
+		if part == "(" || part == ")" || strings.EqualFold(part, "OR") || strings.EqualFold(part, "NOT") {
+			return nil, fmt.Errorf("invalid JSON query condition %q: grouped expressions are not allowed here", part)
+		}
+
+		condition, err := parseJSONQueryCondition(part)
 		if err != nil {
 			return nil, err
 		}
-		if path == "" {
-			return nil, fmt.Errorf("invalid JSON query condition %q: path must not be empty", part)
-		}
-		if value == "" {
-			return nil, fmt.Errorf("invalid JSON query condition %q: value must not be empty", part)
-		}
-
-		conditions = append(conditions, JSONQueryCondition{
-			Path:     path,
-			Operator: operator,
-			Value:    value,
-		})
+		conditions = append(conditions, condition)
 	}
 
 	return conditions, nil
 }
 
-// ParseJSONQueryExpression parses OR-separated condition groups.
-// Conditions inside one group remain ANDed together.
+// ParseJSONQueryExpression parses condition groups with implicit AND and explicit OR.
+// Parentheses are compiled down into the same OR-of-ANDs structure used by the evaluator.
 func ParseJSONQueryExpression(queryText string) (JSONQueryExpression, error) {
 	queryText = strings.TrimSpace(queryText)
 	if queryText == "" {
 		return nil, nil
 	}
 
-	parts := strings.Fields(queryText)
-	groups := make(JSONQueryExpression, 0, 1)
-	currentGroup := make([]string, 0, len(parts))
-
-	flushGroup := func() error {
-		if len(currentGroup) == 0 {
-			return fmt.Errorf("invalid JSON query expression: OR must appear between condition groups")
-		}
-
-		conditions, err := ParseJSONQueryConditions(strings.Join(currentGroup, " "))
-		if err != nil {
-			return err
-		}
-		groups = append(groups, conditions)
-		currentGroup = currentGroup[:0]
-		return nil
-	}
-
-	for _, part := range parts {
-		if strings.EqualFold(part, "OR") {
-			if err := flushGroup(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		currentGroup = append(currentGroup, part)
-	}
-
-	if err := flushGroup(); err != nil {
+	tokens, err := tokenizeJSONQuery(queryText)
+	if err != nil {
 		return nil, err
 	}
 
-	return groups, nil
+	parser := jsonQueryParser{
+		tokens: tokens,
+	}
+	expression, err := parser.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if parser.hasNext() {
+		return nil, fmt.Errorf("invalid JSON query expression near %q", parser.peek())
+	}
+	if len(expression) == 0 {
+		return nil, fmt.Errorf("invalid JSON query expression: expected at least one condition")
+	}
+
+	return expression, nil
+}
+
+// tokenizeJSONQuery splits the query into condition, operator, and grouping tokens.
+// Quotes keep values with spaces intact so the parser can support realistic string predicates.
+func tokenizeJSONQuery(queryText string) ([]string, error) {
+	tokens := make([]string, 0, len(queryText)/4)
+	var current strings.Builder
+	inQuotes := false
+	escaping := false
+
+	flushCurrent := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+
+	for _, r := range queryText {
+		switch {
+		case escaping:
+			current.WriteRune(r)
+			escaping = false
+		case r == '\\' && inQuotes:
+			current.WriteRune(r)
+			escaping = true
+		case r == '"':
+			current.WriteRune(r)
+			inQuotes = !inQuotes
+		case inQuotes:
+			current.WriteRune(r)
+		case r == '(' || r == ')':
+			flushCurrent()
+			tokens = append(tokens, string(r))
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flushCurrent()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escaping {
+		return nil, fmt.Errorf("invalid JSON query expression: unterminated escape sequence")
+	}
+	if inQuotes {
+		return nil, fmt.Errorf("invalid JSON query expression: missing closing quote")
+	}
+
+	flushCurrent()
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+
+	for _, part := range tokens {
+		if part == "(" || part == ")" || strings.EqualFold(part, "OR") {
+			continue
+		}
+		if strings.EqualFold(part, "NOT") {
+			continue
+		}
+
+		if _, err := parseJSONQueryCondition(part); err != nil {
+			return nil, err
+		}
+	}
+
+	return tokens, nil
+}
+
+// jsonQueryParser compiles a grouped JSON query into disjunctive normal form.
+// The evaluator stays simple because parser output is still an OR-of-ANDs slice structure.
+type jsonQueryParser struct {
+	tokens []string
+	index  int
+}
+
+func (p *jsonQueryParser) parseExpression() (JSONQueryExpression, error) {
+	left, err := p.parseOrExpression()
+	if err != nil {
+		return nil, err
+	}
+	return normalizeJSONQueryExpression(left), nil
+}
+
+func (p *jsonQueryParser) parseOrExpression() (JSONQueryExpression, error) {
+	left, err := p.parseAndExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.hasNext() && strings.EqualFold(p.peek(), "OR") {
+		p.next()
+		right, err := p.parseAndExpression()
+		if err != nil {
+			return nil, fmt.Errorf("invalid JSON query expression: OR must appear between condition groups")
+		}
+		left = append(left, right...)
+	}
+
+	return left, nil
+}
+
+func (p *jsonQueryParser) parseAndExpression() (JSONQueryExpression, error) {
+	if !p.hasNext() || p.peek() == ")" || strings.EqualFold(p.peek(), "OR") {
+		return nil, fmt.Errorf("invalid JSON query expression: expected a condition or group")
+	}
+
+	left, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.hasNext() && p.peek() != ")" && !strings.EqualFold(p.peek(), "OR") {
+		right, err := p.parsePrimary()
+		if err != nil {
+			return nil, err
+		}
+		left = andJSONQueryExpressions(left, right)
+	}
+
+	return left, nil
+}
+
+func (p *jsonQueryParser) parsePrimary() (JSONQueryExpression, error) {
+	if !p.hasNext() {
+		return nil, fmt.Errorf("invalid JSON query expression: expected a condition or group")
+	}
+
+	negateCount := 0
+	for p.hasNext() && strings.EqualFold(p.peek(), "NOT") {
+		negateCount++
+		p.next()
+	}
+	if !p.hasNext() {
+		return nil, fmt.Errorf("invalid JSON query expression: NOT must be followed by a condition or group")
+	}
+
+	token := p.next()
+	if token == "(" {
+		group, err := p.parseOrExpression()
+		if err != nil {
+			return nil, err
+		}
+		if !p.hasNext() || p.next() != ")" {
+			return nil, fmt.Errorf("invalid JSON query expression: missing closing parenthesis")
+		}
+		if len(group) == 0 {
+			return nil, fmt.Errorf("invalid JSON query expression: empty parentheses are not allowed")
+		}
+		if negateCount%2 == 1 {
+			group = negateJSONQueryExpression(group)
+		}
+		return group, nil
+	}
+	if token == ")" {
+		return nil, fmt.Errorf("invalid JSON query expression: unexpected closing parenthesis")
+	}
+	if strings.EqualFold(token, "OR") {
+		return nil, fmt.Errorf("invalid JSON query expression: OR must appear between condition groups")
+	}
+
+	condition, err := parseJSONQueryCondition(token)
+	if err != nil {
+		return nil, err
+	}
+	if negateCount%2 == 1 {
+		condition.Negated = !condition.Negated
+	}
+
+	return JSONQueryExpression{{condition}}, nil
+}
+
+func (p *jsonQueryParser) hasNext() bool {
+	return p.index < len(p.tokens)
+}
+
+func (p *jsonQueryParser) peek() string {
+	return p.tokens[p.index]
+}
+
+func (p *jsonQueryParser) next() string {
+	token := p.tokens[p.index]
+	p.index++
+	return token
+}
+
+func andJSONQueryExpressions(left, right JSONQueryExpression) JSONQueryExpression {
+	if len(left) == 0 {
+		return normalizeJSONQueryExpression(right)
+	}
+	if len(right) == 0 {
+		return normalizeJSONQueryExpression(left)
+	}
+
+	combined := make(JSONQueryExpression, 0, len(left)*len(right))
+	for _, leftGroup := range left {
+		for _, rightGroup := range right {
+			merged := make([]JSONQueryCondition, 0, len(leftGroup)+len(rightGroup))
+			merged = append(merged, leftGroup...)
+			merged = append(merged, rightGroup...)
+			combined = append(combined, merged)
+		}
+	}
+
+	return normalizeJSONQueryExpression(combined)
+}
+
+// negateJSONQueryExpression applies De Morgan's law and keeps the output in OR-of-ANDs form.
+// This lets NOT work on grouped expressions without adding a second evaluator shape.
+func negateJSONQueryExpression(expression JSONQueryExpression) JSONQueryExpression {
+	if len(expression) == 0 {
+		return JSONQueryExpression{}
+	}
+
+	negated := JSONQueryExpression{{}}
+	for _, group := range expression {
+		if len(group) == 0 {
+			continue
+		}
+
+		groupChoices := make(JSONQueryExpression, 0, len(group))
+		for _, condition := range group {
+			negatedCondition := condition
+			negatedCondition.Negated = !negatedCondition.Negated
+			groupChoices = append(groupChoices, []JSONQueryCondition{negatedCondition})
+		}
+
+		negated = andJSONQueryExpressions(negated, groupChoices)
+	}
+
+	return normalizeJSONQueryExpression(negated)
+}
+
+func normalizeJSONQueryExpression(expression JSONQueryExpression) JSONQueryExpression {
+	normalized := make(JSONQueryExpression, 0, len(expression))
+	for _, group := range expression {
+		if len(group) == 0 {
+			continue
+		}
+
+		normalizedGroup := make([]JSONQueryCondition, len(group))
+		copy(normalizedGroup, group)
+		normalized = append(normalized, normalizedGroup)
+	}
+
+	return normalized
+}
+
+func parseJSONQueryCondition(part string) (JSONQueryCondition, error) {
+	path, operator, value, err := splitJSONQueryCondition(part)
+	if err != nil {
+		return JSONQueryCondition{}, err
+	}
+	if path == "" {
+		return JSONQueryCondition{}, fmt.Errorf("invalid JSON query condition %q: path must not be empty", part)
+	}
+	if value == "" {
+		return JSONQueryCondition{}, fmt.Errorf("invalid JSON query condition %q: value must not be empty", part)
+	}
+	if strings.HasPrefix(value, "\"") {
+		unquoted, err := strconv.Unquote(value)
+		if err != nil {
+			return JSONQueryCondition{}, fmt.Errorf("invalid JSON query condition %q: %w", part, err)
+		}
+		value = unquoted
+	}
+
+	return JSONQueryCondition{
+		Negated:  false,
+		Path:     path,
+		Operator: operator,
+		Value:    value,
+	}, nil
 }
 
 func splitJSONQueryCondition(part string) (string, string, string, error) {
@@ -254,23 +511,27 @@ func (db *DB) removeJSONFieldIndexLocked(entry indexEntry) {
 }
 
 func evaluateJSONCondition(values []string, condition JSONQueryCondition) bool {
+	matched := false
+
 	switch condition.Operator {
 	case "", "=":
 		for _, value := range values {
 			if value == condition.Value {
-				return true
+				matched = true
+				break
 			}
 		}
 	case "~=":
 		for _, value := range values {
 			if strings.Contains(strings.ToLower(value), strings.ToLower(condition.Value)) {
-				return true
+				matched = true
+				break
 			}
 		}
 	case ">", ">=", "<", "<=":
 		queryNumber, err := strconv.ParseFloat(condition.Value, 64)
 		if err != nil {
-			return false
+			return condition.Negated
 		}
 		for _, value := range values {
 			valueNumber, err := strconv.ParseFloat(value, 64)
@@ -280,23 +541,30 @@ func evaluateJSONCondition(values []string, condition JSONQueryCondition) bool {
 			switch condition.Operator {
 			case ">":
 				if valueNumber > queryNumber {
-					return true
+					matched = true
 				}
 			case ">=":
 				if valueNumber >= queryNumber {
-					return true
+					matched = true
 				}
 			case "<":
 				if valueNumber < queryNumber {
-					return true
+					matched = true
 				}
 			case "<=":
 				if valueNumber <= queryNumber {
-					return true
+					matched = true
 				}
+			}
+			if matched {
+				break
 			}
 		}
 	}
 
-	return false
+	if condition.Negated {
+		return !matched
+	}
+
+	return matched
 }

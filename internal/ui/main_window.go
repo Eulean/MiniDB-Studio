@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	studioapp "minidb-studio/internal/app"
 
 	"fyne.io/fyne/v2"
@@ -15,6 +16,7 @@ type MainWindow struct {
 	application       *studioapp.Application
 	window            fyne.Window
 	contentHost       *fyne.Container
+	pageLabel         *widget.Label
 	locationLabel     *widget.Label
 	statusLabel       *widget.Label
 	lastResultLabel   *widget.Label
@@ -28,12 +30,14 @@ type MainWindow struct {
 // NewMainWindow creates the full MiniDB Studio desktop shell.
 func NewMainWindow(fyneApplication fyne.App, application *studioapp.Application) *MainWindow {
 	window := fyneApplication.NewWindow("MiniDB Studio")
-	window.Resize(fyne.NewSize(1220, 780))
+	window.Resize(fyne.NewSize(1360, 860))
+	window.SetMaster()
 	window.CenterOnScreen()
 
 	mainWindow := &MainWindow{
 		application:       application,
 		window:            window,
+		pageLabel:         widget.NewLabel(""),
 		locationLabel:     widget.NewLabel(""),
 		statusLabel:       widget.NewLabel(""),
 		lastResultLabel:   widget.NewLabel(""),
@@ -48,18 +52,36 @@ func NewMainWindow(fyneApplication fyne.App, application *studioapp.Application)
 
 	sidebar := mainWindow.buildSidebar()
 	statusBar := mainWindow.buildStatusBar()
-	header := container.NewVBox(
-		widget.NewLabelWithStyle("MiniDB Studio", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Windows-first native key-value database studio built in Go and Fyne."),
+	header := sectionCard(
+		"MiniDB Studio",
+		"Windows-first native key-value database studio built in Go and Fyne.",
+		container.NewBorder(
+			nil,
+			nil,
+			nil,
+			container.NewHBox(
+				widget.NewIcon(theme.ComputerIcon()),
+				container.NewVBox(
+					widget.NewLabelWithStyle("Active Page", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+					mainWindow.pageLabel,
+				),
+			),
+			container.NewVBox(
+				widget.NewLabelWithStyle("Workspace", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				compactHint("Resizable native desktop shell with persistent local storage."),
+			),
+		),
 	)
 
 	mainWindow.window.SetContent(
-		container.NewBorder(
-			header,
-			statusBar,
-			sidebar,
-			nil,
-			mainWindow.contentHost,
+		container.NewPadded(
+			container.NewBorder(
+				header,
+				statusBar,
+				sidebar,
+				nil,
+				container.NewPadded(mainWindow.contentHost),
+			),
 		),
 	)
 
@@ -79,43 +101,48 @@ func (m *MainWindow) ShowAndRun() {
 
 func (m *MainWindow) buildSidebar() fyne.CanvasObject {
 	makeNavButton := func(label string, icon fyne.Resource, page studioapp.Page) *widget.Button {
-		button := widget.NewButtonWithIcon(label, icon, func() {
+		button := sidebarNavButton(label, icon, func() {
 			m.showPage(page)
 		})
-		button.Alignment = widget.ButtonAlignLeading
 		m.navigationButtons[page] = button
 		return button
 	}
 
-	return container.NewBorder(
-		nil,
-		nil,
-		nil,
-		nil,
-		container.NewVBox(
-			makeNavButton("Data Explorer", theme.StorageIcon(), studioapp.PageExplorer),
-			makeNavButton("Command Console", theme.ComputerIcon(), studioapp.PageConsole),
-			makeNavButton("Maintenance", theme.SettingsIcon(), studioapp.PageMaintenance),
-			makeNavButton("About", theme.InfoIcon(), studioapp.PageAbout),
-			layout.NewSpacer(),
+	sidebarContent := container.NewVBox(
+		widget.NewLabelWithStyle("Navigate", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		compactHint("Browse data, run commands, and maintain your local MiniDB from one desktop workspace."),
+		spacerLine(),
+		makeNavButton("Data Explorer", theme.StorageIcon(), studioapp.PageExplorer),
+		makeNavButton("Command Console", theme.ComputerIcon(), studioapp.PageConsole),
+		makeNavButton("Maintenance", theme.SettingsIcon(), studioapp.PageMaintenance),
+		makeNavButton("About", theme.InfoIcon(), studioapp.PageAbout),
+		layout.NewSpacer(),
+	)
+
+	return container.NewGridWrap(
+		fyne.NewSize(260, 0),
+		sectionCard(
+			"Workspace",
+			fmt.Sprintf("Database root: %s", m.application.DataDir()),
+			sidebarContent,
 		),
 	)
 }
 
 func (m *MainWindow) buildStatusBar() fyne.CanvasObject {
-	return container.NewGridWithColumns(
-		3,
-		m.locationLabel,
-		m.statusLabel,
-		m.lastResultLabel,
+	return container.NewGridWithColumns(3,
+		statusCard("Database", m.locationLabel, theme.StorageIcon()),
+		statusCard("Status", m.statusLabel, theme.ConfirmIcon()),
+		statusCard("Last Result", m.lastResultLabel, theme.InfoIcon()),
 	)
 }
 
 func (m *MainWindow) refreshStatusBar() {
 	snapshot := m.application.State().Snapshot()
-	m.locationLabel.SetText("Database: " + snapshot.DatabaseLocation)
-	m.statusLabel.SetText("Status: " + snapshot.CurrentStatus)
-	m.lastResultLabel.SetText("Last Result: " + snapshot.LastResult)
+	m.pageLabel.SetText(string(snapshot.CurrentPage))
+	m.locationLabel.SetText(snapshot.DatabaseLocation)
+	m.statusLabel.SetText(snapshot.CurrentStatus)
+	m.lastResultLabel.SetText(snapshot.LastResult)
 }
 
 func (m *MainWindow) showPage(page studioapp.Page) {
@@ -148,53 +175,35 @@ func (m *MainWindow) showPage(page studioapp.Page) {
 }
 
 func buildAboutPage() fyne.CanvasObject {
-	aboutText := widget.NewRichTextFromMarkdown(`
-# MiniDB Studio
+	overview := sectionCard(
+		"MiniDB Studio",
+		"Native desktop database tooling built in Go and Fyne around a custom append-only engine.",
+		container.NewVBox(
+			compactHint("Designed for local persistence, practical data exploration, and teachable architecture rather than server-style complexity."),
+			widget.NewSeparator(),
+			widget.NewLabel("What it already does well"),
+			widget.NewRichTextFromMarkdown("- local single-process durable storage\n- collections and paged browsing\n- JSON-aware records and nested query paths\n- validation, export, repair, backup, compaction\n- preset-driven dataset workflows"),
+		),
+	)
 
-MiniDB Studio is a native desktop app built with Go and Fyne around a custom append-only key-value engine.
+	workflows := sectionCard(
+		"Recommended Workflow",
+		"Use the app like an operational desktop studio rather than a raw command shell only.",
+		widget.NewRichTextFromMarkdown("1. Start in **Data Explorer** to browse one collection.\n2. Use **Command Console** for scripted operations and preset workflows.\n3. Use **Maintenance** for validation, compaction, snapshots, import, export, and repair.\n4. Save reusable dataset presets once and reuse them across preview/import/export jobs."),
+	)
 
-## Current Capabilities
-- local single-process durable storage
-- collections and paged browsing
-- JSON-aware records
-- nested JSON path lookup with AND/OR query expressions
-- validation, export, repair, backup, and compaction
-- legacy local-data migration and stale-lock recovery
+	commandFamilies := sectionCard(
+		"Command Families",
+		"MiniDB stays intentionally compact, but the console already covers the full local workflow surface.",
+		widget.NewRichTextFromMarkdown("- Core KV: `SET`, `GET`, `DELETE`, `KEYS`\n- Collections: `SETIN`, `GETIN`, `DELETEIN`, `KEYSIN`\n- Documents: `SETJSON`, `FINDIN`\n- Dataset flows: `PREVIEWNDJSON`, `IMPORTNDJSON`, `EXPORTQUERY`\n- Presets: `SAVEPRESET`, `LISTPRESETS`, `SHOWPRESET`, `DUPLICATEPRESET`, `RENAMEDPRESET`, `EXPORTPRESETCONFIG`, `IMPORTPRESETCONFIG`, `DELETEPRESET`\n- Maintenance: `STATS`, `SNAPSHOT`, `VALIDATE`, `COMPACT`, `EXPORT`, `REPAIR`"),
+	)
 
-## Supported Commands
-- SET key value
-- GET key
-- DELETE key
-- KEYS [optional-prefix]
-- SETIN collection key value
-- GETIN collection key
-- DELETEIN collection key
-- KEYSIN collection [prefix]
-- SETJSON collection key json-value
-- FINDIN collection path=value path>=value path~=value
-- FINDIN collection cond cond OR cond cond
-- STATS
-- COMPACT
-- SNAPSHOT
-- VALIDATE
-- EXPORT collection
-- REPAIR
+	limitations := sectionCard(
+		"Intentional v1-v7 Limits",
+		"MiniDB Studio is becoming more capable, but it is still deliberately not a server database.",
+		widget.NewRichTextFromMarkdown("- no SQL\n- no networking\n- no authentication\n- no replication\n- no cloud sync\n- no multi-user access"),
+	)
 
-## Desktop Smoke Test
-1. Launch the app and let the Explorer load.
-2. Create a record from Data Explorer.
-3. Run a console command such as STATS or FINDIN docs active=true OR profile.score>=90.
-4. Open Maintenance and verify stats appear.
-5. Close and relaunch to confirm persistence.
-
-## Not Included Yet
-- SQL
-- networking
-- authentication
-- replication
-- cloud sync
-- multi-user access
-`)
-
-	return container.NewVScroll(aboutText)
+	grid := container.NewGridWithColumns(2, workflows, commandFamilies)
+	return standardScroll(container.NewVBox(overview, grid, limitations))
 }
