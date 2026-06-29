@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v10.0 in progress
+- MiniDB Studio v11.0 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -335,6 +335,15 @@
 - Add collection schema inspection so operators can understand observed JSON field paths and sample values before querying or importing
 - Surface schema inspection in Query Studio so analytical exploration lives in one desktop workflow
 
+## V10.1 Scope
+- Fix custom-theme popup and dropdown readability so menus, selects, and overlays stay visible on Windows dark-system setups
+- Force the Studio theme onto one coherent light palette instead of mixing light custom surfaces with dark fallback popup colors
+
+## V11.0 Scope
+- Add `OFFSET` support for query paging in the mini SQL layer
+- Add `COUNT(DISTINCT column)` for lightweight uniqueness analysis on supported metadata columns
+- Keep the analytical layer intentionally small, local, and read-only
+
 ## Proposed File Changes
 - Keep:
   - `internal/app`
@@ -420,6 +429,6 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v10.0 now has the first lightweight analysis layer on top of the local engine.
-- After that lands, future work can focus on richer aggregates, deeper schema intelligence, saved result views, wildcard/path helpers, and background maintenance workers.
+- MiniDB Studio v11.0 now has the first lightweight analysis-and-paging layer on top of the local engine.
+- After that lands, future work can focus on richer aggregates, deeper schema intelligence, result-table UX, saved result views, wildcard/path helpers, and background maintenance workers.
 - Keep the engine local-first and single-process while growing the operator experience around practical data exploration.

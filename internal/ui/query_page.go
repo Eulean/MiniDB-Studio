@@ -46,7 +46,7 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 	page.nameEntry.SetPlaceHolder("Saved query name")
 	page.notesEntry.SetPlaceHolder("Notes about this query")
 	page.notesEntry.SetMinRowsVisible(3)
-	page.queryEntry.SetPlaceHolder("SELECT key, value_preview FROM docs WHERE active=true ORDER BY updated_at DESC LIMIT 25")
+	page.queryEntry.SetPlaceHolder("SELECT key, value_preview FROM docs WHERE active=true ORDER BY updated_at DESC LIMIT 25 OFFSET 0")
 	page.queryEntry.SetMinRowsVisible(8)
 	page.queryEntry.Wrapping = fyne.TextWrapWord
 	page.resultEntry.Disable()

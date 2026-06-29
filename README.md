@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v10.0:
+This repository now targets MiniDB v11.0:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -50,6 +50,8 @@ This repository now targets MiniDB v10.0:
 - saved-query library and dedicated Query Studio page
 - collection schema inspection for observed JSON field paths and sample values
 - TSV export for read-only SQL result sets
+- `OFFSET` query paging and `COUNT(DISTINCT column)` support in the mini SQL layer
+- fixed popup, select, and overlay readability for the custom desktop theme
 - native desktop management UI
 
 It is intentionally not a SQL server, network service, or distributed database, even though it now includes a small read-only SQL-style query surface.
@@ -280,8 +282,9 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `KEYS prefix`
 - `COLLECTIONS`
 - `SETIN collection key value`
-- `SELECT columns FROM collection [WHERE json-query] [GROUP BY column] [ORDER BY column ASC|DESC] [LIMIT n]`
+- `SELECT columns FROM collection [WHERE json-query] [GROUP BY column] [ORDER BY column ASC|DESC] [LIMIT n] [OFFSET n]`
 - `SELECT COUNT(*) FROM collection [WHERE json-query]`
+- `SELECT COUNT(DISTINCT value_kind) FROM docs`
 - `SELECT value_kind, COUNT(*) FROM docs GROUP BY value_kind ORDER BY count DESC`
 - `GETIN collection key`
 - `DELETEIN collection key`

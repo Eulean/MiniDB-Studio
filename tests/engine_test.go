@@ -2425,3 +2425,36 @@ func TestInspectCollectionSchema(t *testing.T) {
 		t.Fatalf("expected active to have two distinct values, got %#v", fieldMap["active"])
 	}
 }
+
+func TestMiniSQLCountDistinctAndOffset(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:2", `plain text`, engine.ValueKindRaw); err != nil {
+		t.Fatalf("seed doc 2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:3", `{"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed doc 3: %v", err)
+	}
+
+	distinctResult, err := application.ExecuteCommand(`SELECT COUNT(DISTINCT value_kind) FROM docs`)
+	if err != nil {
+		t.Fatalf("execute count distinct: %v", err)
+	}
+	if !strings.Contains(distinctResult, "count_distinct") || !strings.Contains(distinctResult, "\n2\n") {
+		t.Fatalf("unexpected count distinct result: %q", distinctResult)
+	}
+
+	offsetResult, err := application.ExecuteCommand(`SELECT key FROM docs ORDER BY key ASC LIMIT 1 OFFSET 1`)
+	if err != nil {
+		t.Fatalf("execute offset query: %v", err)
+	}
+	if !strings.Contains(offsetResult, "doc:2") || strings.Contains(offsetResult, "doc:1\n") {
+		t.Fatalf("unexpected offset query result: %q", offsetResult)
+	}
+}
