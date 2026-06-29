@@ -14,13 +14,14 @@ import (
 	"minidb-studio/internal/engine"
 )
 
-var miniSQLPattern = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([A-Za-z0-9._-]+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+([A-Za-z0-9._-]+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?\s*$`)
+var miniSQLPattern = regexp.MustCompile(`(?is)^\s*SELECT\s+(.+?)\s+FROM\s+([A-Za-z0-9._-]+)(?:\s+WHERE\s+(.+?))?(?:\s+GROUP\s+BY\s+([A-Za-z0-9._-]+))?(?:\s+ORDER\s+BY\s+([A-Za-z0-9._-]+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?\s*$`)
 
 // SQLSelectQuery is the intentionally small read-only SQL surface for MiniDB v9.0.
 type SQLSelectQuery struct {
 	Columns       []string
 	Collection    string
 	WhereText     string
+	GroupByColumn string
 	OrderByColumn string
 	OrderDesc     bool
 	Limit         int
@@ -59,13 +60,21 @@ func (a *Application) RunMiniSQL(input string) (MiniSQLResult, error) {
 	}
 
 	var records []engine.Record
+	fetchLimit := query.Limit
+	if query.IsCountQuery || query.GroupByColumn != "" {
+		fetchLimit = 0
+	}
 	if strings.TrimSpace(query.WhereText) == "" {
-		records, _ = a.ListRecords(query.Collection, "", 0, query.Limit)
+		records, _ = a.ListRecords(query.Collection, "", 0, fetchLimit)
 	} else {
-		records, _, err = a.ListRecordsByJSONQuery(query.Collection, "", query.WhereText, 0, query.Limit)
+		records, _, err = a.ListRecordsByJSONQuery(query.Collection, "", query.WhereText, 0, fetchLimit)
 		if err != nil {
 			return MiniSQLResult{}, err
 		}
+	}
+
+	if query.GroupByColumn != "" {
+		return runMiniSQLGroupBy(a, records, query)
 	}
 
 	if query.OrderByColumn != "" {
@@ -149,7 +158,7 @@ func (a *Application) ExportMiniSQLResult(input, destinationPath string) error {
 func parseMiniSQLSelect(input string) (SQLSelectQuery, error) {
 	matches := miniSQLPattern.FindStringSubmatch(strings.TrimSpace(input))
 	if len(matches) == 0 {
-		return SQLSelectQuery{}, fmt.Errorf("unsupported SQL syntax; use SELECT <columns> FROM <collection> [WHERE <json-query>] [ORDER BY column ASC|DESC] [LIMIT n]")
+		return SQLSelectQuery{}, fmt.Errorf("unsupported SQL syntax; use SELECT <columns> FROM <collection> [WHERE <json-query>] [GROUP BY column] [ORDER BY column ASC|DESC] [LIMIT n]")
 	}
 
 	columns, err := parseMiniSQLColumns(matches[1])
@@ -158,8 +167,8 @@ func parseMiniSQLSelect(input string) (SQLSelectQuery, error) {
 	}
 
 	limit := 100
-	if matches[6] != "" {
-		parsedLimit, err := strconv.Atoi(strings.TrimSpace(matches[6]))
+	if matches[7] != "" {
+		parsedLimit, err := strconv.Atoi(strings.TrimSpace(matches[7]))
 		if err != nil || parsedLimit <= 0 {
 			return SQLSelectQuery{}, fmt.Errorf("SQL LIMIT must be a positive integer")
 		}
@@ -170,8 +179,9 @@ func parseMiniSQLSelect(input string) (SQLSelectQuery, error) {
 		Columns:       columns,
 		Collection:    strings.TrimSpace(matches[2]),
 		WhereText:     strings.TrimSpace(matches[3]),
-		OrderByColumn: strings.ToLower(strings.TrimSpace(matches[4])),
-		OrderDesc:     strings.EqualFold(strings.TrimSpace(matches[5]), "DESC"),
+		GroupByColumn: strings.ToLower(strings.TrimSpace(matches[4])),
+		OrderByColumn: strings.ToLower(strings.TrimSpace(matches[5])),
+		OrderDesc:     strings.EqualFold(strings.TrimSpace(matches[6]), "DESC"),
 		Limit:         limit,
 		IsCountQuery:  len(columns) == 1 && columns[0] == "count",
 	}
@@ -179,8 +189,19 @@ func parseMiniSQLSelect(input string) (SQLSelectQuery, error) {
 	if len(query.Columns) == 0 {
 		return SQLSelectQuery{}, fmt.Errorf("SQL query must request at least one column")
 	}
-	if query.OrderByColumn != "" && !isSupportedMiniSQLColumn(query.OrderByColumn) {
+	if query.GroupByColumn != "" && !isSupportedMiniSQLGroupColumn(query.GroupByColumn) {
+		return SQLSelectQuery{}, fmt.Errorf("unsupported SQL GROUP BY column %q", query.GroupByColumn)
+	}
+	if query.GroupByColumn != "" {
+		if !isValidGroupBySelection(query.Columns, query.GroupByColumn) {
+			return SQLSelectQuery{}, fmt.Errorf("GROUP BY queries currently require SELECT %s, COUNT(*)", query.GroupByColumn)
+		}
+	}
+	if query.OrderByColumn != "" && !isSupportedMiniSQLOrderColumn(query.OrderByColumn, query.GroupByColumn != "") {
 		return SQLSelectQuery{}, fmt.Errorf("unsupported SQL ORDER BY column %q", query.OrderByColumn)
+	}
+	if query.IsCountQuery && query.GroupByColumn != "" {
+		return SQLSelectQuery{}, fmt.Errorf("use SELECT %s, COUNT(*) when combining COUNT(*) with GROUP BY", query.GroupByColumn)
 	}
 
 	return query, nil
@@ -198,12 +219,18 @@ func parseMiniSQLColumns(columnText string) ([]string, error) {
 	parts := strings.Split(columnText, ",")
 	columns := make([]string, 0, len(parts))
 	for _, part := range parts {
-		column := strings.ToLower(strings.TrimSpace(part))
-		if isSupportedMiniSQLColumn(column) {
+		rawColumn := strings.TrimSpace(part)
+		if strings.EqualFold(rawColumn, "COUNT(*)") {
+			columns = append(columns, "count")
+			continue
+		}
+
+		column := strings.ToLower(rawColumn)
+		if column == "count" || isSupportedMiniSQLColumn(column) {
 			columns = append(columns, column)
 			continue
 		}
-		return nil, fmt.Errorf("unsupported SQL column %q", strings.TrimSpace(part))
+		return nil, fmt.Errorf("unsupported SQL column %q", rawColumn)
 	}
 
 	return columns, nil
@@ -249,6 +276,102 @@ func isSupportedMiniSQLColumn(column string) bool {
 	default:
 		return false
 	}
+}
+
+func isSupportedMiniSQLGroupColumn(column string) bool {
+	switch column {
+	case "collection", "value_kind":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedMiniSQLOrderColumn(column string, grouped bool) bool {
+	if grouped && column == "count" {
+		return true
+	}
+	return isSupportedMiniSQLColumn(column)
+}
+
+func isValidGroupBySelection(columns []string, groupByColumn string) bool {
+	if len(columns) != 2 {
+		return false
+	}
+	hasGroupColumn := false
+	hasCount := false
+	for _, column := range columns {
+		if column == groupByColumn {
+			hasGroupColumn = true
+		}
+		if column == "count" {
+			hasCount = true
+		}
+	}
+	return hasGroupColumn && hasCount
+}
+
+func runMiniSQLGroupBy(application *Application, records []engine.Record, query SQLSelectQuery) (MiniSQLResult, error) {
+	counts := make(map[string]int)
+	for _, record := range records {
+		groupValue := miniSQLSortValue(application, record, query.GroupByColumn)
+		counts[groupValue]++
+	}
+
+	rows := make([][]string, 0, len(counts))
+	for groupValue, count := range counts {
+		row := make([]string, 0, len(query.Columns))
+		for _, column := range query.Columns {
+			switch column {
+			case query.GroupByColumn:
+				row = append(row, groupValue)
+			case "count":
+				row = append(row, strconv.Itoa(count))
+			default:
+				return MiniSQLResult{}, fmt.Errorf("unsupported grouped SQL column %q", column)
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	if query.OrderByColumn != "" {
+		sort.SliceStable(rows, func(i, j int) bool {
+			leftText, leftNumber := miniSQLGroupedSortValue(query, rows[i])
+			rightText, rightNumber := miniSQLGroupedSortValue(query, rows[j])
+			if query.OrderByColumn == "count" {
+				if query.OrderDesc {
+					return leftNumber > rightNumber
+				}
+				return leftNumber < rightNumber
+			}
+			if query.OrderDesc {
+				return leftText > rightText
+			}
+			return leftText < rightText
+		})
+	}
+	if query.Limit > 0 && len(rows) > query.Limit {
+		rows = rows[:query.Limit]
+	}
+
+	return MiniSQLResult{
+		Headers:  query.Columns,
+		Rows:     rows,
+		RowCount: len(rows),
+	}, nil
+}
+
+func miniSQLGroupedSortValue(query SQLSelectQuery, row []string) (string, int) {
+	for index, column := range query.Columns {
+		if column == query.OrderByColumn {
+			if column == "count" {
+				count, _ := strconv.Atoi(row[index])
+				return row[index], count
+			}
+			return row[index], 0
+		}
+	}
+	return "", 0
 }
 
 func sortMiniSQLRecords(application *Application, records []engine.Record, column string, desc bool) {

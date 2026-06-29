@@ -2,7 +2,7 @@
 
 MiniDB Studio is a Windows-first native desktop application built with Go and Fyne around a custom embedded key-value database engine written from scratch with the Go standard library.
 
-This repository now targets MiniDB v9.0:
+This repository now targets MiniDB v10.0:
 - single-process file locking
 - segmented append-only storage
 - offset-based in-memory index
@@ -46,7 +46,9 @@ This repository now targets MiniDB v9.0:
 - persistent activity history for major workspace operations
 - read-only mini SQL queries translated into MiniDB collection and JSON-query reads
 - `ORDER BY` and `COUNT(*)` support in the mini SQL read layer
+- lightweight `GROUP BY ... COUNT(*)` summaries for query analysis
 - saved-query library and dedicated Query Studio page
+- collection schema inspection for observed JSON field paths and sample values
 - TSV export for read-only SQL result sets
 - native desktop management UI
 
@@ -82,6 +84,7 @@ MiniDB Studio Desktop App
 |   +-- collection and dashboard summaries
 |   +-- read-only mini SQL translation layer
 |   +-- saved query library
+|   +-- collection schema inspection
 |
 +-- internal/engine
 |   +-- DB lifecycle
@@ -123,6 +126,7 @@ minidb-studio/
       application.go
       insights.go
       query_store.go
+      schema.go
       sql.go
       state.go
     engine/
@@ -276,8 +280,9 @@ If corruption appears earlier in storage, startup returns a clear recovery error
 - `KEYS prefix`
 - `COLLECTIONS`
 - `SETIN collection key value`
-- `SELECT columns FROM collection [WHERE json-query] [ORDER BY column ASC|DESC] [LIMIT n]`
+- `SELECT columns FROM collection [WHERE json-query] [GROUP BY column] [ORDER BY column ASC|DESC] [LIMIT n]`
 - `SELECT COUNT(*) FROM collection [WHERE json-query]`
+- `SELECT value_kind, COUNT(*) FROM docs GROUP BY value_kind ORDER BY count DESC`
 - `GETIN collection key`
 - `DELETEIN collection key`
 - `KEYSIN collection [prefix]`

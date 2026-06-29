@@ -1,7 +1,7 @@
 # MiniDB Studio Agent Notes
 
 ## Current Phase
-- MiniDB Studio v9.0 in progress
+- MiniDB Studio v10.0 in progress
 
 ## Goals In Progress
 - Keep the v3.1 engine stable while adding repair/export tooling and maintenance recommendations. Completed.
@@ -329,6 +329,12 @@
 - Dashboard summary updated with saved-query counts so the home page reflects operational maturity
 - Remove temporary startup tracing so the desktop build stays release-clean
 
+## V10.0 Scope
+- Add lightweight grouped SQL summaries through `GROUP BY ... COUNT(*)`
+- Keep aggregation intentionally small and local-first instead of expanding into a full analytical SQL engine
+- Add collection schema inspection so operators can understand observed JSON field paths and sample values before querying or importing
+- Surface schema inspection in Query Studio so analytical exploration lives in one desktop workflow
+
 ## Proposed File Changes
 - Keep:
   - `internal/app`
@@ -414,6 +420,6 @@
   - explorer initialization-order crash fix
 
 ## Next Steps
-- MiniDB Studio v9.0 now has the first real query-workbench layer on top of the local engine.
-- After that lands, future work can focus on richer aggregates, schema intelligence, saved result views, wildcard/path helpers, and background maintenance workers.
+- MiniDB Studio v10.0 now has the first lightweight analysis layer on top of the local engine.
+- After that lands, future work can focus on richer aggregates, deeper schema intelligence, saved result views, wildcard/path helpers, and background maintenance workers.
 - Keep the engine local-first and single-process while growing the operator experience around practical data exploration.

@@ -208,20 +208,20 @@ func buildAboutPage() fyne.CanvasObject {
 			compactHint("Designed for local persistence, practical data exploration, and teachable architecture rather than server-style complexity."),
 			widget.NewSeparator(),
 			widget.NewLabel("What it already does well"),
-			widget.NewRichTextFromMarkdown("- local single-process durable storage\n- collections and paged browsing\n- JSON-aware records and nested query paths\n- validation, export, repair, backup, compaction\n- preset-driven dataset workflows\n- saved read-only SQL queries with result export"),
+			widget.NewRichTextFromMarkdown("- local single-process durable storage\n- collections and paged browsing\n- JSON-aware records and nested query paths\n- validation, export, repair, backup, compaction\n- preset-driven dataset workflows\n- saved read-only SQL queries with result export\n- grouped query summaries and collection schema inspection"),
 		),
 	)
 
 	workflows := sectionCard(
 		"Recommended Workflow",
 		"Use the app like an operational desktop studio rather than a raw command shell only.",
-		widget.NewRichTextFromMarkdown("1. Start in **Overview** to check workspace health, activity, and collection shape.\n2. Use **Data Explorer** to browse one collection and edit records safely.\n3. Use **Query Studio** for saved SQL snippets, `COUNT(*)`, ordering, and TSV result export.\n4. Use **Command Console** for scripted operations, raw commands, and preset workflows.\n5. Use **Preset Library** to curate reusable dataset workflows.\n6. Use **Maintenance** for validation, compaction, snapshots, import, export, and repair."),
+		widget.NewRichTextFromMarkdown("1. Start in **Overview** to check workspace health, activity, and collection shape.\n2. Use **Data Explorer** to browse one collection and edit records safely.\n3. Use **Query Studio** for saved SQL snippets, `COUNT(*)`, grouped summaries, schema inspection, and TSV result export.\n4. Use **Command Console** for scripted operations, raw commands, and preset workflows.\n5. Use **Preset Library** to curate reusable dataset workflows.\n6. Use **Maintenance** for validation, compaction, snapshots, import, export, and repair."),
 	)
 
 	commandFamilies := sectionCard(
 		"Command Families",
 		"MiniDB stays intentionally compact, but the console already covers the full local workflow surface.",
-		widget.NewRichTextFromMarkdown("- Core KV: `SET`, `GET`, `DELETE`, `KEYS`\n- Collections: `SETIN`, `GETIN`, `DELETEIN`, `KEYSIN`\n- Documents: `SETJSON`, `FINDIN`\n- Dataset flows: `PREVIEWNDJSON`, `IMPORTNDJSON`, `EXPORTQUERY`\n- Presets: `SAVEPRESET`, `LISTPRESETS`, `SHOWPRESET`, `DUPLICATEPRESET`, `RENAMEDPRESET`, `EXPORTPRESETCONFIG`, `IMPORTPRESETCONFIG`, `DELETEPRESET`\n- Read-only SQL: `SELECT COUNT(*) FROM docs WHERE active=true`, `SELECT key, value_preview FROM docs ORDER BY updated_at DESC LIMIT 25`\n- Maintenance: `STATS`, `SNAPSHOT`, `VALIDATE`, `COMPACT`, `EXPORT`, `REPAIR`"),
+		widget.NewRichTextFromMarkdown("- Core KV: `SET`, `GET`, `DELETE`, `KEYS`\n- Collections: `SETIN`, `GETIN`, `DELETEIN`, `KEYSIN`\n- Documents: `SETJSON`, `FINDIN`\n- Dataset flows: `PREVIEWNDJSON`, `IMPORTNDJSON`, `EXPORTQUERY`\n- Presets: `SAVEPRESET`, `LISTPRESETS`, `SHOWPRESET`, `DUPLICATEPRESET`, `RENAMEDPRESET`, `EXPORTPRESETCONFIG`, `IMPORTPRESETCONFIG`, `DELETEPRESET`\n- Read-only SQL: `SELECT COUNT(*) FROM docs WHERE active=true`, `SELECT value_kind, COUNT(*) FROM docs GROUP BY value_kind ORDER BY count DESC`, `SELECT key, value_preview FROM docs ORDER BY updated_at DESC LIMIT 25`\n- Maintenance: `STATS`, `SNAPSHOT`, `VALIDATE`, `COMPACT`, `EXPORT`, `REPAIR`"),
 	)
 
 	limitations := sectionCard(

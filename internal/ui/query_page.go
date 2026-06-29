@@ -15,28 +15,32 @@ import (
 
 // QueryPage gives MiniDB Studio a dedicated read/query workspace for SQL-style exploration.
 type QueryPage struct {
-	window          fyne.Window
-	application     *studioapp.Application
-	onStatusChanged func()
-	root            fyne.CanvasObject
-	savedSelect     *widget.Select
-	nameEntry       *widget.Entry
-	notesEntry      *widget.Entry
-	queryEntry      *widget.Entry
-	resultEntry     *widget.Entry
+	window           fyne.Window
+	application      *studioapp.Application
+	onStatusChanged  func()
+	root             fyne.CanvasObject
+	savedSelect      *widget.Select
+	nameEntry        *widget.Entry
+	notesEntry       *widget.Entry
+	queryEntry       *widget.Entry
+	resultEntry      *widget.Entry
+	schemaCollection *widget.Select
+	schemaEntry      *widget.Entry
 }
 
 // NewQueryPage builds the query studio page with saved queries, SQL execution, and result export.
 func NewQueryPage(window fyne.Window, application *studioapp.Application, onStatusChanged func()) *QueryPage {
 	page := &QueryPage{
-		window:          window,
-		application:     application,
-		onStatusChanged: onStatusChanged,
-		savedSelect:     widget.NewSelect([]string{}, nil),
-		nameEntry:       widget.NewEntry(),
-		notesEntry:      widget.NewMultiLineEntry(),
-		queryEntry:      widget.NewMultiLineEntry(),
-		resultEntry:     widget.NewMultiLineEntry(),
+		window:           window,
+		application:      application,
+		onStatusChanged:  onStatusChanged,
+		savedSelect:      widget.NewSelect([]string{}, nil),
+		nameEntry:        widget.NewEntry(),
+		notesEntry:       widget.NewMultiLineEntry(),
+		queryEntry:       widget.NewMultiLineEntry(),
+		resultEntry:      widget.NewMultiLineEntry(),
+		schemaCollection: widget.NewSelect([]string{}, nil),
+		schemaEntry:      widget.NewMultiLineEntry(),
 	}
 
 	page.nameEntry.SetPlaceHolder("Saved query name")
@@ -49,6 +53,10 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 	page.resultEntry.SetMinRowsVisible(16)
 	page.resultEntry.Wrapping = fyne.TextWrapOff
 	page.resultEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	page.schemaEntry.Disable()
+	page.schemaEntry.SetMinRowsVisible(14)
+	page.schemaEntry.Wrapping = fyne.TextWrapWord
+	page.schemaEntry.TextStyle = fyne.TextStyle{Monospace: true}
 
 	page.savedSelect.OnChanged = func(string) {
 		if err := page.loadSelectedQuery(); err != nil {
@@ -78,6 +86,11 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 	exportButton := widget.NewButton("Export Result", func() {
 		page.exportLastResult()
 	})
+	inspectSchemaButton := widget.NewButton("Inspect Schema", func() {
+		if err := page.inspectSchema(); err != nil {
+			dialog.ShowError(err, page.window)
+		}
+	})
 
 	inputCard := sectionCard(
 		"Query Studio",
@@ -105,7 +118,19 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 		container.NewVScroll(page.resultEntry),
 	)
 
-	page.root = standardScroll(container.NewVBox(inputCard, resultCard))
+	schemaCard := sectionCard(
+		"Collection Schema",
+		"Inspect observed JSON field paths, document coverage, and sample values for one collection.",
+		container.NewVBox(
+			widget.NewLabel("Collection"),
+			page.schemaCollection,
+			inspectSchemaButton,
+			widget.NewSeparator(),
+			container.NewVScroll(page.schemaEntry),
+		),
+	)
+
+	page.root = standardScroll(container.NewVBox(inputCard, resultCard, schemaCard))
 	page.Refresh()
 	return page
 }
@@ -131,6 +156,13 @@ func (p *QueryPage) Refresh() {
 	}
 	p.savedSelect.Options = options
 	p.savedSelect.Refresh()
+
+	collections := p.application.ListCollections()
+	p.schemaCollection.Options = collections
+	p.schemaCollection.Refresh()
+	if len(collections) > 0 && (p.schemaCollection.Selected == "" || !containsOption(collections, p.schemaCollection.Selected)) {
+		p.schemaCollection.SetSelected(collections[0])
+	}
 
 	if len(options) == 0 {
 		p.savedSelect.ClearSelected()
@@ -257,4 +289,38 @@ func (p *QueryPage) exportLastResult() {
 	saveDialog.SetFileName("minidb-query-result.tsv")
 	saveDialog.SetFilter(fynestorage.NewExtensionFileFilter([]string{".tsv"}))
 	saveDialog.Show()
+}
+
+func (p *QueryPage) inspectSchema() error {
+	collection := strings.TrimSpace(p.schemaCollection.Selected)
+	if collection == "" {
+		return fmt.Errorf("select a collection first")
+	}
+
+	summary, err := p.application.InspectCollectionSchema(collection)
+	if err != nil {
+		return err
+	}
+
+	lines := []string{
+		fmt.Sprintf("Collection: %s", summary.Collection),
+		fmt.Sprintf("JSON Records: %d", summary.JSONRecordCount),
+		fmt.Sprintf("Observed Fields: %d", len(summary.Fields)),
+	}
+	if len(summary.Fields) == 0 {
+		lines = append(lines, "No JSON field data observed.")
+	} else {
+		for _, field := range summary.Fields {
+			samples := strings.Join(field.SampleValues, ", ")
+			if samples == "" {
+				samples = "(no sample values)"
+			}
+			lines = append(lines, fmt.Sprintf("%s | docs=%d | distinct=%d | sample=%s", field.Path, field.ObservedDocuments, field.DistinctValueCount, samples))
+		}
+	}
+
+	p.schemaEntry.Enable()
+	p.schemaEntry.SetText(strings.Join(lines, "\n"))
+	p.schemaEntry.Disable()
+	return nil
 }

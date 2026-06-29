@@ -2364,3 +2364,64 @@ func TestMiniSQLCountOrderAndExport(t *testing.T) {
 		t.Fatalf("unexpected exported SQL result: %q", exportedText)
 	}
 }
+
+func TestMiniSQLGroupByCount(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed json record 1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:2", `{"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed json record 2: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:3", `plain text`, engine.ValueKindRaw); err != nil {
+		t.Fatalf("seed raw record: %v", err)
+	}
+
+	result, err := application.ExecuteCommand(`SELECT value_kind, COUNT(*) FROM docs GROUP BY value_kind ORDER BY count DESC LIMIT 10`)
+	if err != nil {
+		t.Fatalf("execute grouped SQL query: %v", err)
+	}
+	if !strings.Contains(result, "value_kind\tcount") {
+		t.Fatalf("unexpected grouped SQL header: %q", result)
+	}
+	if !strings.Contains(result, "json\t2") || !strings.Contains(result, "raw\t1") {
+		t.Fatalf("unexpected grouped SQL rows: %q", result)
+	}
+}
+
+func TestInspectCollectionSchema(t *testing.T) {
+	db, dir := openTestDB(t)
+	defer db.Close()
+
+	application := studioapp.NewApplicationForTests(db, studioapp.NewDatasetPresetStore(dir))
+
+	if err := db.SetTypedInCollection("docs", "doc:1", `{"profile":{"name":"Ada","email":"ada@example.com"},"active":true}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed schema record 1: %v", err)
+	}
+	if err := db.SetTypedInCollection("docs", "doc:2", `{"profile":{"name":"Grace","email":"grace@example.com"},"active":false}`, engine.ValueKindJSON); err != nil {
+		t.Fatalf("seed schema record 2: %v", err)
+	}
+
+	summary, err := application.InspectCollectionSchema("docs")
+	if err != nil {
+		t.Fatalf("inspect collection schema: %v", err)
+	}
+	if summary.JSONRecordCount != 2 {
+		t.Fatalf("expected 2 json records, got %#v", summary)
+	}
+
+	fieldMap := make(map[string]studioapp.SchemaFieldSummary)
+	for _, field := range summary.Fields {
+		fieldMap[field.Path] = field
+	}
+	if fieldMap["profile.name"].ObservedDocuments != 2 {
+		t.Fatalf("expected profile.name in both docs, got %#v", fieldMap["profile.name"])
+	}
+	if fieldMap["active"].DistinctValueCount != 2 {
+		t.Fatalf("expected active to have two distinct values, got %#v", fieldMap["active"])
+	}
+}
