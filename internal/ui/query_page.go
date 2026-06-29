@@ -23,9 +23,9 @@ type QueryPage struct {
 	nameEntry        *widget.Entry
 	notesEntry       *widget.Entry
 	queryEntry       *widget.Entry
-	resultEntry      *widget.Entry
+	resultGrid       *widget.TextGrid
 	schemaCollection *widget.Select
-	schemaEntry      *widget.Entry
+	schemaGrid       *widget.TextGrid
 }
 
 // NewQueryPage builds the query studio page with saved queries, SQL execution, and result export.
@@ -38,9 +38,9 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 		nameEntry:        widget.NewEntry(),
 		notesEntry:       widget.NewMultiLineEntry(),
 		queryEntry:       widget.NewMultiLineEntry(),
-		resultEntry:      widget.NewMultiLineEntry(),
+		resultGrid:       widget.NewTextGrid(),
 		schemaCollection: widget.NewSelect([]string{}, nil),
-		schemaEntry:      widget.NewMultiLineEntry(),
+		schemaGrid:       widget.NewTextGrid(),
 	}
 
 	page.nameEntry.SetPlaceHolder("Saved query name")
@@ -49,14 +49,10 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 	page.queryEntry.SetPlaceHolder("SELECT key, value_preview FROM docs WHERE active=true ORDER BY updated_at DESC LIMIT 25 OFFSET 0")
 	page.queryEntry.SetMinRowsVisible(8)
 	page.queryEntry.Wrapping = fyne.TextWrapWord
-	page.resultEntry.Disable()
-	page.resultEntry.SetMinRowsVisible(16)
-	page.resultEntry.Wrapping = fyne.TextWrapOff
-	page.resultEntry.TextStyle = fyne.TextStyle{Monospace: true}
-	page.schemaEntry.Disable()
-	page.schemaEntry.SetMinRowsVisible(14)
-	page.schemaEntry.Wrapping = fyne.TextWrapWord
-	page.schemaEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	page.resultGrid.ShowLineNumbers = false
+	page.resultGrid.SetText("Run a query to see results here.")
+	page.schemaGrid.ShowLineNumbers = false
+	page.schemaGrid.SetText("Inspect a collection to see schema details here.")
 
 	page.savedSelect.OnChanged = func(string) {
 		if err := page.loadSelectedQuery(); err != nil {
@@ -115,7 +111,7 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 	resultCard := sectionCard(
 		"Result Output",
 		"Results are shown as tab-separated text and can be exported to `.tsv` for spreadsheet or review workflows.",
-		container.NewVScroll(page.resultEntry),
+		container.NewVScroll(page.resultGrid),
 	)
 
 	schemaCard := sectionCard(
@@ -126,7 +122,7 @@ func NewQueryPage(window fyne.Window, application *studioapp.Application, onStat
 			page.schemaCollection,
 			inspectSchemaButton,
 			widget.NewSeparator(),
-			container.NewVScroll(page.schemaEntry),
+			container.NewVScroll(page.schemaGrid),
 		),
 	)
 
@@ -144,9 +140,7 @@ func (p *QueryPage) CanvasObject() fyne.CanvasObject {
 func (p *QueryPage) Refresh() {
 	queries, err := p.application.ListSavedQueries()
 	if err != nil {
-		p.resultEntry.Enable()
-		p.resultEntry.SetText("Unable to load saved queries: " + err.Error())
-		p.resultEntry.Disable()
+		p.resultGrid.SetText("Unable to load saved queries: " + err.Error())
 		return
 	}
 
@@ -193,16 +187,12 @@ func (p *QueryPage) loadSelectedQuery() error {
 func (p *QueryPage) runQuery() error {
 	result, err := p.application.ExecuteCommand(p.queryEntry.Text)
 	if err != nil {
-		p.resultEntry.Enable()
-		p.resultEntry.SetText("ERROR: " + err.Error())
-		p.resultEntry.Disable()
+		p.resultGrid.SetText("ERROR: " + err.Error())
 		p.onStatusChanged()
 		return err
 	}
 
-	p.resultEntry.Enable()
-	p.resultEntry.SetText(result)
-	p.resultEntry.Disable()
+	p.resultGrid.SetText(result)
 	p.onStatusChanged()
 	return nil
 }
@@ -254,9 +244,7 @@ func (p *QueryPage) deleteQuery() {
 		p.nameEntry.SetText("")
 		p.notesEntry.SetText("")
 		p.queryEntry.SetText("")
-		p.resultEntry.Enable()
-		p.resultEntry.SetText("")
-		p.resultEntry.Disable()
+		p.resultGrid.SetText("Run a query to see results here.")
 		p.Refresh()
 		p.onStatusChanged()
 	}, p.window)
@@ -319,8 +307,6 @@ func (p *QueryPage) inspectSchema() error {
 		}
 	}
 
-	p.schemaEntry.Enable()
-	p.schemaEntry.SetText(strings.Join(lines, "\n"))
-	p.schemaEntry.Disable()
+	p.schemaGrid.SetText(strings.Join(lines, "\n"))
 	return nil
 }
